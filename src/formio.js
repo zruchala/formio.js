@@ -8,10 +8,12 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   var baseUrl = _baseUrl || '';
   var noalias = _noalias || false;
   var cache = {};
+  var offlineCache = {};
+  var ready = Q();
 
   /**
    * Returns parts of the URL that are important.
-   * Indexex
+   * Indexes
    *  - 0: The full url
    *  - 1: The protocol
    *  - 2: The hostname
@@ -151,7 +153,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         query = '?' + serialize(query.params);
       }
       if (!this[_id]) { return Q.reject('Missing ' + _id); }
-      return Formio.request(this[_url] + this.query);
+      return this.makeRequest(type, this[_url] + this.query);
     };
   };
 
@@ -169,7 +171,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
       var method = this[_id] ? 'put' : 'post';
       var reqUrl = this[_id] ? this[_url] : this[type + 'sUrl'];
       cache = {};
-      return Formio.request(reqUrl + this.query, method, data);
+      return this.makeRequest(type, reqUrl + this.query, method, data);
     };
   };
 
@@ -186,7 +188,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     return function() {
       if (!this[_id]) { Q.reject('Nothing to delete'); }
       cache = {};
-      return Formio.request(this[_url], 'delete');
+      return this.makeRequest(type, this[_url], 'delete');
     };
   };
 
@@ -198,14 +200,79 @@ module.exports = function(_baseUrl, _noalias, _domain) {
    * @private
    */
   var _index = function(type) {
-    var _url = type + 'sUrl';
+    var _url = type + 'Url';
     return function(query) {
       query = query || '';
       if (typeof query === 'object') {
         query = '?' + serialize(query.params);
       }
-      return Formio.request(this[_url] + query);
+      return this.makeRequest(type, this[_url] + query);
     };
+  };
+
+  // Returns cached results if offline, otherwise calls Formio.request
+  Formio.prototype.makeRequest = function(type, url, method, data) {
+    var self = this;
+    var offline = !navigator.onLine;
+    method = (method || 'GET').toUpperCase();
+
+    return ready // Wait until offline caching is finished
+    .then(function() {
+      // Try to get offline cached response if offline
+      var cache = offlineCache[self.projectId];
+      if(!cache) return null;
+
+      if(type === 'form' && method === 'GET' && offline) {
+        if(!cache.forms) {
+          return null;
+        }
+        // Find and return form
+        return Object.keys(cache.forms).reduce(function(result, name) {
+          if(result) return result;
+          // TODO: verify this works with longform URLs too
+          var form = cache.forms[name];
+          if(form._id === self.formId || form.path === self.formId) return form;
+        }, null);
+      }
+
+      if(type === 'forms' && method === 'GET' && offline) {
+        if(!cache.forms) {
+          return null;
+        }
+        return cache.forms;
+      }
+
+    })
+    .then(function(result) {
+      // Make regular request if no offline response returned
+      return result || Formio.request(url, method, data);
+    })
+    .then(function(result) {
+      // Check if need to update cache after request
+      var cache = offlineCache[self.projectId];
+      if(!cache) return result; // Skip caching
+
+      if(type === 'form' && method !== 'DELETE') {
+        cache.forms[result.name] = result;
+      }
+      else if(type === 'form' && method === 'DELETE') {
+        delete cache.forms[result.name];
+      }
+      else if(type === 'forms' && method === 'GET') {
+        // Don't replace all forms, as some may be omitted due to permissions
+        result.forEach(function(form) {
+          cache.forms[form.name] = form;
+        });
+      }
+      else {
+        // Nothing to cache
+        return result;
+      }
+
+      // Update localStorage
+      localStorage.setItem('formioCache-' + self.projectId, JSON.stringify(cache));
+      return result;
+    });
   };
 
   // Define specific CRUD methods.
@@ -215,15 +282,15 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   Formio.prototype.loadForm = _load('form');
   Formio.prototype.saveForm = _save('form');
   Formio.prototype.deleteForm = _delete('form');
-  Formio.prototype.loadForms = _index('form');
+  Formio.prototype.loadForms = _index('forms');
   Formio.prototype.loadSubmission = _load('submission');
   Formio.prototype.saveSubmission = _save('submission');
   Formio.prototype.deleteSubmission = _delete('submission');
-  Formio.prototype.loadSubmissions = _index('submission');
+  Formio.prototype.loadSubmissions = _index('submissions');
   Formio.prototype.loadAction = _load('action');
   Formio.prototype.saveAction = _save('action');
   Formio.prototype.deleteAction = _delete('action');
-  Formio.prototype.loadActions = _index('action');
+  Formio.prototype.loadActions = _index('actions');
   Formio.prototype.availableActions = function() { return Formio.request(this.formUrl + '/actions'); };
   Formio.prototype.actionInfo = function(name) { return Formio.request(this.formUrl + '/actions/' + name); };
 
@@ -232,78 +299,82 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   Formio.request = function(url, method, data) {
     if (!url) { return Q.reject('No url provided'); }
     method = (method || 'GET').toUpperCase();
-
-    // Get the cached promise to save multiple loads.
     var cacheKey = btoa(url);
-    if (method === 'GET' && cache.hasOwnProperty(cacheKey)) {
-      return cache[cacheKey];
-    }
-    else {
-      var promise = Q()
-      .then(function() {
-        // Set up and fetch request
-        var headers = new Headers({
-          'Accept': 'application/json',
-          'Content-type': 'application/json; charset=UTF-8'
-        });
-        var token = Formio.getToken();
-        if (token) {
-          headers.append('x-jwt-token', token);
-        }
 
-        var options = {
-          method: method,
-          headers: headers,
-          mode: 'cors'
-        };
-        if (data) {
-          options.body = JSON.stringify(data);
-        }
+    return Q().then(function() {
+      // Get the cached promise to save multiple loads.
+      if (method === 'GET' && cache.hasOwnProperty(cacheKey)) {
+        return cache[cacheKey];
+      }
+      else {
+        return Q()
+        .then(function() {
+          // Set up and fetch request
+          var headers = new Headers({
+            'Accept': 'application/json',
+            'Content-type': 'application/json; charset=UTF-8'
+          });
+          var token = Formio.getToken();
+          if (token) {
+            headers.append('x-jwt-token', token);
+          }
 
-        return fetch(url, options);
-      })
-      .then(function(response) {
-        // Handle fetch results
-        if (response.ok) {
-          var token = response.headers.get('x-jwt-token');
-          if (response.status >= 200 && response.status < 300 && token && token !== '') {
-            Formio.setToken(token);
+          var options = {
+            method: method,
+            headers: headers,
+            mode: 'cors'
+          };
+          if (data) {
+            options.body = JSON.stringify(data);
           }
-          // 204 is no content. Don't try to .json() it.
-          if (response.status === 204) {
-            return {};
-          }
-          if (response.headers.get('content-type').indexOf('application/json') !== -1) {
+
+          return fetch(url, options);
+        })
+        .catch(function(err) {
+          err.message = 'Could not connect to API server (' + err.message + ')';
+          throw err;
+        })
+        .then(function(response) {
+          // Handle fetch results
+          if (response.ok) {
+            var token = response.headers.get('x-jwt-token');
+            if (response.status >= 200 && response.status < 300 && token && token !== '') {
+              Formio.setToken(token);
+            }
+            // 204 is no content. Don't try to .json() it.
+            if (response.status === 204) {
+              return {};
+            }
             return response.json();
           }
-          return response.text();
-        }
-        else {
-          if (response.status === 440) {
-            Formio.setToken(null);
+          else {
+            if (response.status === 440) {
+              Formio.setToken(null);
+            }
+            // Parse and return the error as a rejected promise to reject this promise
+            return (response.headers.get('content-type').indexOf('application/json') !== -1 ?
+              response.json() : response.text())
+              .then(function(error){
+                throw error;
+              });
           }
-          // Parse and return the error as a rejected promise to reject this promise
-          return (response.headers.get('content-type').indexOf('application/json') !== -1 ?
-            response.json() : response.text())
-            .then(function(error){
-              throw error;
-            });
-        }
-      })
-      .catch(function(err) {
-        // Remove failed promises from cache
-        delete cache[cacheKey];
-        // Propagate error so client can handle accordingly
-        throw err;
-      });
-
+        })
+        .catch(function(err) {
+          // Remove failed promises from cache
+          delete cache[cacheKey];
+          // Propagate error so client can handle accordingly
+          throw err;
+        });
+      }
+    })
+    .then(function(result) {
       // Save the cache
       if (method === 'GET') {
-        cache[cacheKey] = promise;
+        cache[cacheKey] = Q(result);
       }
 
-      return promise;
-    }
+      return result;
+    });
   };
 
   Formio.setToken = function(token) {
@@ -399,5 +470,53 @@ module.exports = function(_baseUrl, _noalias, _domain) {
       return data[component.key];
     }
   };
+
+  Formio.cacheOfflineProject = function(url, path) {
+    var formio = new Formio(url);
+    var projectId = formio.projectId;
+    var projectUrl = formio.projectUrl;
+
+    var projectPromise;
+    // Offline
+    // if(!navigator.onLine) {
+      // Try to return cached first
+      var cached = localStorage.getItem('formioCache-' + projectId);
+      if(cached) {
+        projectPromise = Q(JSON.parse(cached));
+      }
+      // Otherwise grab offline project definition
+      else {
+        projectPromise = fetch(path)
+        .then(function(response) {
+          return response.json();
+        });
+      }
+    // }
+    // TODO: fix forms index endpoint to show forms you have permission to
+    // // Online
+    // else {
+    //   // Load and use the latest list of forms
+    //   projectPromise = formio.loadForms()
+    //   .then(function(forms) {
+    //     return {forms: forms}
+    //   });
+    // }
+
+
+    // Add this promise to the ready chain
+    return ready = ready.then(function() {
+      return projectPromise.then(function(project) {
+        localStorage.setItem('formioCache-' + projectId, JSON.stringify(project));
+        return offlineCache[projectId] = project;
+      })
+    })
+    .catch(function(err) {
+      console.error('Error trying to cache offline storage:', err);
+      // Swallow the error so failing caching doesn't halt the ready promise chain
+    });
+  };
+
+  // TODO: Formio.updateOfflineProject
+
   return Formio;
 }
