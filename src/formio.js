@@ -4,11 +4,14 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   require('whatwg-fetch');
   var Q = require('Q');
 
+  var OFFLINE_CACHE_PREFIX = 'formioCache-';
+
 // The default base url.
   var baseUrl = _baseUrl || '';
   var noalias = _noalias || false;
   var cache = {};
   var offlineCache = {};
+  var forceOffline = false;
   var ready = Q();
 
   /**
@@ -33,6 +36,31 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         str.push(encodeURIComponent(p) + "=" + encodeURIComponent(obj[p]));
       }
     return str.join("&");
+  }
+
+  /**
+   * Removes duplicate forms from offline cached project.
+   * Duplicates can occur if form is renamed (old and new
+   * stored under different names but have same id/path).
+   * NOTE: modifies the given object
+   *
+   * @param project Cached project
+   */
+  var removeCacheDuplicates = function(project) {
+    Object.keys(project.forms).forEach(function(name) {
+      var form = project.forms[name];
+      if(!form) { // form was deleted
+        return;
+      }
+      Object.keys(project.forms).forEach(function(otherName) {
+        var otherForm = project.forms[otherName];
+        if((form._id === otherForm._id || form.path === otherForm.path) &&
+            new Date(otherForm.modified) < new Date(form.modified)) {
+            delete project.forms[otherName];
+        }
+      });
+    });
+
   }
 
   // The formio class.
@@ -213,7 +241,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   // Returns cached results if offline, otherwise calls Formio.request
   Formio.prototype.makeRequest = function(type, url, method, data) {
     var self = this;
-    var offline = !navigator.onLine;
+    var offline = Formio.isOffline();
     method = (method || 'GET').toUpperCase();
 
     return ready // Wait until offline caching is finished
@@ -270,7 +298,8 @@ module.exports = function(_baseUrl, _noalias, _domain) {
       }
 
       // Update localStorage
-      localStorage.setItem('formioCache-' + self.projectId, JSON.stringify(cache));
+      removeCacheDuplicates(cache); // Clean up duplicates
+      localStorage.setItem(OFFLINE_CACHE_PREFIX + self.projectId, JSON.stringify(cache));
       return result;
     });
   };
@@ -478,9 +507,9 @@ module.exports = function(_baseUrl, _noalias, _domain) {
 
     var projectPromise;
     // Offline
-    // if(!navigator.onLine) {
+    // if(Formio.isOffline()) {
       // Try to return cached first
-      var cached = localStorage.getItem('formioCache-' + projectId);
+      var cached = localStorage.getItem(OFFLINE_CACHE_PREFIX + projectId);
       if(cached) {
         projectPromise = Q(JSON.parse(cached));
       }
@@ -489,6 +518,15 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         projectPromise = fetch(path)
         .then(function(response) {
           return response.json();
+        })
+        .then(function(project) {
+          Object.keys(project.forms.forms).forEach(function(formName) {
+            // Set modified time as early as possible so any newer
+            // form will override this one if there's a name conflict.
+            project.forms[formName].created = new Date(0).toISOString();
+            project.forms[formName].modified = new Date(0).toISOString();
+          });
+          return project;
         });
       }
     // }
@@ -506,8 +544,8 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     // Add this promise to the ready chain
     return ready = ready.then(function() {
       return projectPromise.then(function(project) {
-        localStorage.setItem('formioCache-' + projectId, JSON.stringify(project));
-        return offlineCache[projectId] = project;
+        localStorage.setItem(OFFLINE_CACHE_PREFIX + projectId, JSON.stringify(project));
+        offlineCache[projectId] = project;
       })
     })
     .catch(function(err) {
@@ -517,6 +555,25 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   };
 
   // TODO: Formio.updateOfflineProject
+  Formio.clearOfflineCache = function() {
+    // Clear in-memory cache
+    offlineCache = {};
+    // Clear localStorage cache
+    for(var i = 0; i < localStorage.length; i++) {
+      var key = localStorage.key(i);
+      if(key.indexOf(OFFLINE_CACHE_PREFIX) === 0) {
+        localStorage.removeItem(key);
+      }
+    }
+  };
+
+  Formio.setOffline = function(offline) {
+    forceOffline = offline;
+  }
+
+  Formio.isOffline = function() {
+    return forceOffline || !navigator.onLine;
+  }
 
   return Formio;
 }
