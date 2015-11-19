@@ -49,12 +49,12 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   var removeCacheDuplicates = function(project) {
     Object.keys(project.forms).forEach(function(name) {
       var form = project.forms[name];
-      if(!form) { // form was deleted
+      if (!form) { // form was deleted
         return;
       }
       Object.keys(project.forms).forEach(function(otherName) {
         var otherForm = project.forms[otherName];
-        if((form._id === otherForm._id || form.path === otherForm.path) &&
+        if ((form._id === otherForm._id || form.path === otherForm.path) &&
             new Date(otherForm.modified) < new Date(form.modified)) {
             delete project.forms[otherName];
         }
@@ -248,23 +248,23 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     .then(function() {
       // Try to get offline cached response if offline
       var cache = offlineCache[self.projectId];
-      if(!cache) return null;
+      if (!cache) return null;
 
-      if(type === 'form' && method === 'GET' && offline) {
-        if(!cache.forms) {
+      if (type === 'form' && method === 'GET' && offline) {
+        if (!cache.forms) {
           return null;
         }
         // Find and return form
         return Object.keys(cache.forms).reduce(function(result, name) {
-          if(result) return result;
+          if (result) return result;
           // TODO: verify this works with longform URLs too
           var form = cache.forms[name];
-          if(form._id === self.formId || form.path === self.formId) return form;
+          if (form._id === self.formId || form.path === self.formId) return form;
         }, null);
       }
 
-      if(type === 'forms' && method === 'GET' && offline) {
-        if(!cache.forms) {
+      if (type === 'forms' && method === 'GET' && offline) {
+        if (!cache.forms) {
           return null;
         }
         return cache.forms;
@@ -278,15 +278,15 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     .then(function(result) {
       // Check if need to update cache after request
       var cache = offlineCache[self.projectId];
-      if(!cache) return result; // Skip caching
+      if (!cache) return result; // Skip caching
 
-      if(type === 'form' && method !== 'DELETE') {
+      if (type === 'form' && method !== 'DELETE') {
         cache.forms[result.name] = result;
       }
-      else if(type === 'form' && method === 'DELETE') {
+      else if (type === 'form' && method === 'DELETE') {
         delete cache.forms[result.name];
       }
-      else if(type === 'forms' && method === 'GET') {
+      else if (type === 'forms' && method === 'GET') {
         // Don't replace all forms, as some may be omitted due to permissions
         result.forEach(function(form) {
           cache.forms[form.name] = form;
@@ -482,7 +482,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         }
 
         // Convert old single field data in submissions to multiple
-        if(key === parts[parts.length - 1] && component.multiple && !Array.isArray(value[key])) {
+        if (key === parts[parts.length - 1] && component.multiple && !Array.isArray(value[key])) {
           value[key] = [value[key]];
         }
 
@@ -493,7 +493,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     }
     else {
       // Convert old single field data in submissions to multiple
-      if(component.multiple && !Array.isArray(data[component.key])) {
+      if (component.multiple && !Array.isArray(data[component.key])) {
         data[component.key] = [data[component.key]];
       }
       return data[component.key];
@@ -507,10 +507,10 @@ module.exports = function(_baseUrl, _noalias, _domain) {
 
     var projectPromise;
     // Offline
-    // if(Formio.isOffline()) {
+    // if (Formio.isOffline()) {
       // Try to return cached first
       var cached = localStorage.getItem(OFFLINE_CACHE_PREFIX + projectId);
-      if(cached) {
+      if (cached) {
         projectPromise = Q(JSON.parse(cached));
       }
       // Otherwise grab offline project definition
@@ -554,14 +554,13 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     });
   };
 
-  // TODO: Formio.updateOfflineProject
   Formio.clearOfflineCache = function() {
     // Clear in-memory cache
     offlineCache = {};
     // Clear localStorage cache
     for(var i = 0; i < localStorage.length; i++) {
       var key = localStorage.key(i);
-      if(key.indexOf(OFFLINE_CACHE_PREFIX) === 0) {
+      if (key.indexOf(OFFLINE_CACHE_PREFIX) === 0) {
         localStorage.removeItem(key);
       }
     }
