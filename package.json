@@ -17,6 +17,7 @@
   },
   "homepage": "https://github.com/formio/formio.js#readme",
   "dependencies": {
+    "eventemitter3": "^1.1.1",
     "q": "^1.4.1",
     "whatwg-fetch": "^0.9.0"
   },

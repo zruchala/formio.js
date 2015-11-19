@@ -3,15 +3,35 @@
 module.exports = function(_baseUrl, _noalias, _domain) {
   require('whatwg-fetch');
   var Q = require('Q');
+  var EventEmitter = require('eventemitter3');
 
+  // Prefix used with offline cache entries in localStorage
   var OFFLINE_CACHE_PREFIX = 'formioCache-';
+  var OFFLINE_QUEUE_KEY = 'formioOfflineQueue';
 
 // The default base url.
   var baseUrl = _baseUrl || '';
   var noalias = _noalias || false;
+
+  // The temporary GET request cache storage
   var cache = {};
+
+  // The persistent offline cache storage
   var offlineCache = {};
+
+  // The queue of submissions made offline
+  var offlineQueue = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || '[]');
+
+  // The current request from the offline queue that is being processed
+  var currentOfflineRequest = null;
+
+  // Flag to force offline mode
   var forceOffline = false;
+
+  // Flag to set if Formio should auto dequeue offline requests when online
+  var autoDequeue = true;
+
+  // Promise that resolves when ready to make requests
   var ready = Q();
 
   /**
@@ -60,8 +80,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         }
       });
     });
-
-  }
+  };
 
   // The formio class.
   var Formio = function(path) {
@@ -248,10 +267,10 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     .then(function() {
       // Try to get offline cached response if offline
       var cache = offlineCache[self.projectId];
-      if (!cache) return null;
 
+      // Form GET
       if (type === 'form' && method === 'GET' && offline) {
-        if (!cache.forms) {
+        if (!cache || !cache.forms) {
           return null;
         }
         // Find and return form
@@ -263,11 +282,39 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         }, null);
       }
 
+      // Form INDEX
       if (type === 'forms' && method === 'GET' && offline) {
-        if (!cache.forms) {
+        if (!cache || !cache.forms) {
           return null;
         }
         return cache.forms;
+      }
+
+      // Submission POST
+      if (type === 'submission' && method === 'POST' && offline) {
+        // Store request in offline queue
+        offlineQueue.push({
+            type: type,
+            url: url,
+            method: method,
+            data: data
+        });
+        localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(offlineQueue));
+        Formio.offline.emit('queue', offlineQueue[offlineQueue.length - 1]);
+
+        // Send fake response
+        var user = Formio.getUser();
+        return {
+            // _id: can't give an _id,
+            owner: user ? user._id : null,
+            offline: true,
+            form: self.formId,
+            data: data,
+            created: new Date().toISOString(),
+            modified: new Date().toISOString(),
+            externalIds: [],
+            roles: []
+        };
       }
 
     })
@@ -415,6 +462,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
       return localStorage.removeItem('formioToken');
     }
     localStorage.setItem('formioToken', token);
+    Formio.currentUser(); // Run this so user is updated if null
   };
   Formio.getToken = function() {
     if (this.token) { return this.token; }
@@ -427,10 +475,10 @@ module.exports = function(_baseUrl, _noalias, _domain) {
       this.setToken(null);
       return localStorage.removeItem('formioUser');
     }
-    localStorage.setItem('formioUser', user);
+    localStorage.setItem('formioUser', JSON.stringify(user));
   };
   Formio.getUser = function() {
-    return localStorage.getItem('formioUser');
+    return JSON.parse(localStorage.getItem('formioUser') || null);
   };
 
   Formio.setBaseUrl = function(url, _noalias) {
@@ -446,12 +494,10 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     var token = this.getToken();
     if (!token) { return Q(null) }
     return this.request(baseUrl + '/current')
-      .then(function(response) {
-        if (response.ok) {
-          Formio.setUser(response);
-        }
-        return response;
-      });
+    .then(function(response) {
+      Formio.setUser(response);
+      return response;
+    });
   };
 
 // Keep track of their logout callback.
@@ -500,6 +546,18 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     }
   };
 
+  /**
+   * EventEmitter for offline mode events.
+   * See Node.js documentation for API documentation: https://nodejs.org/api/events.html
+   */
+  Formio.offline = new EventEmitter();
+
+  /**
+   * Sets up a project to be cached offline
+   * @param  url  The url to the project (same as you would pass to Formio constructor)
+   * @param  path Optional. Path to local project.json definition to get initial project forms from if offline.
+   * @return {[type]}      [description]
+   */
   Formio.cacheOfflineProject = function(url, path) {
     var formio = new Formio(url);
     var projectId = formio.projectId;
@@ -514,7 +572,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         projectPromise = Q(JSON.parse(cached));
       }
       // Otherwise grab offline project definition
-      else {
+      else if (path) {
         projectPromise = fetch(path)
         .then(function(response) {
           return response.json();
@@ -528,6 +586,10 @@ module.exports = function(_baseUrl, _noalias, _domain) {
           });
           return project;
         });
+      }
+      else {
+        // Return an empty project so requests start caching offline.
+        projectPromise = Q({ forms: {} });
       }
     // }
     // TODO: fix forms index endpoint to show forms you have permission to
@@ -554,6 +616,10 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     });
   };
 
+  /**
+   * Clears the offline cache. This will also stop previously
+   * cached projects from caching future requests for offline access.
+   */
   Formio.clearOfflineCache = function() {
     // Clear in-memory cache
     offlineCache = {};
@@ -566,13 +632,69 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     }
   };
 
+  /**
+   * Forces Formio to go into offline mode.
+   * @param offline
+   */
   Formio.setOffline = function(offline) {
+    var oldOffline = Formio.isOffline();
     forceOffline = offline;
-  }
 
+    // If autoDequeue enabled and was offline before
+    // and not now, start dequeuing
+    if(autoDequeue && oldOffline && !Formio.isOffline()) {
+      Formio.dequeueOfflineRequests();
+    }
+  };
+
+  /**
+   * @return true if Formio is in offline mode (forced or not),
+   *         false otherwise
+   */
   Formio.isOffline = function() {
     return forceOffline || !navigator.onLine;
-  }
+  };
+
+  Formio.setAutoDequeue = function(auto) {
+    autoDequeue = auto;
+  };
+
+  /**
+   * Attempts to send requests queued while offline.
+   * Each request is sent one at a time. A request that
+   * fails will emit the `formError` event on Formio.offline,
+   * and stop dequeuing further requests.
+   */
+  Formio.dequeueOfflineRequests = function() {
+    if(currentOfflineRequest || !offlineQueue.length) {
+      return;
+    }
+    currentOfflineRequest = offlineQueue.shift();
+    Formio.offline.emit('dequeue', currentOfflineRequest);
+    Formio.request(currentOfflineRequest.url, currentOfflineRequest.method, currentOfflineRequest.data)
+    .then(function(submission) {
+      Formio.offline.emit('formSubmission', submission);
+      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(offlineQueue));
+
+      // Continue to next queue item
+      currentOfflineRequest = null;
+      Formio.dequeueOfflineRequests();
+    })
+    .catch(function(err) {
+      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(offlineQueue));
+      var request = currentOfflineRequest;
+      currentOfflineRequest = null;
+      Formio.offline.emit('formError', request);
+      // Stop sending requests
+    });
+  };
+
+  window.addEventListener('online', function() {
+    if(autoDequeue) {
+      Formio.dequeueOfflineRequests();
+    }
+  });
+
 
   return Formio;
-}
+};
