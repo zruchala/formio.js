@@ -641,6 +641,14 @@ module.exports = function(_baseUrl, _noalias, _domain) {
           return response.json();
         })
         .then(function(project) {
+          project.forms = project.forms || {};
+
+          // Move resources into forms collection, easier to manage that way
+          Object.keys(project.resources || {}).forEach(function(resourceName) {
+            project.forms[resourceName] = project.resources[resourceName];
+          });
+          delete project.resources;
+
           Object.keys(project.forms).forEach(function(formName) {
             // Set modified time as early as possible so any newer
             // form will override this one if there's a name conflict.
@@ -676,17 +684,23 @@ module.exports = function(_baseUrl, _noalias, _domain) {
    * Clears the offline cache. This will also stop previously
    * cached projects from caching future requests for offline access.
    */
-  Formio.clearOfflineCache = function() {
+  Formio.clearOfflineData = function() {
     // Clear in-memory cache
     offlineCache = {};
+    submissionQueue = [];
     // Clear localForage cache
-    localForage.keys().then(function(keys) {
+    localForage.keys()
+    .then(function(keys) {
       return Q.all(keys.map(function(key) {
         if (key.indexOf(OFFLINE_CACHE_PREFIX) === 0) {
           return localForage.removeItem(key);
         }
       }));
+    })
+    .then(function() {
+      return localForage.setItem(OFFLINE_QUEUE_KEY, []);
     });
+
   };
 
   /**
