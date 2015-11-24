@@ -20,16 +20,16 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   var offlineCache = {};
 
   // The queue of submissions made offline
-  var offlineQueue = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || '[]');
+  var submissionQueue = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || '[]');
 
-  // The current request from the offline queue that is being processed
-  var currentOfflineRequest = null;
+  // Flag indicating if submission queue is currently being processed
+  var dequeuing = false;
+
+  // Flag to queue submission requests
+  var queueSubmissions = false;
 
   // Flag to force offline mode
-  var forceOffline = false;
-
-  // Flag to set if Formio should auto dequeue offline requests when online
-  var autoDequeue = true;
+  var forcedOffline = false;
 
   // Promise that resolves when ready to make requests
   var ready = Q();
@@ -56,7 +56,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         str.push(encodeURIComponent(p) + "=" + encodeURIComponent(obj[p]));
       }
     return str.join("&");
-  }
+  };
 
   /**
    * Removes duplicate forms from offline cached project.
@@ -260,80 +260,98 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   // Returns cached results if offline, otherwise calls Formio.request
   Formio.prototype.makeRequest = function(type, url, method, data) {
     var self = this;
-    var offline = Formio.isOffline();
     method = (method || 'GET').toUpperCase();
 
     return ready // Wait until offline caching is finished
     .then(function() {
+      // If queuing is enabled, requests need to be queued regardless of if
+      // we're online or offline.
+      if (queueSubmissions && type === 'submission' && method === 'POST') {
+        // Push request to end of offline queue
+        var queuedRequest = {
+            request: {
+              type: type,
+              url: url,
+              method: method,
+              data: data,
+              form: self.formId
+            },
+            deferred: Q.defer(),
+        };
+        submissionQueue.push(queuedRequest);
+        localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(submissionQueue));
+        Formio.offline.emit('queue', queuedRequest.request);
+
+        // Start the submission queue
+        Formio.dequeueSubmissions();
+
+        return queuedRequest.deferred.promise;
+      }
+
+      if(Formio.isForcedOffline()) {
+        // Fake a network error so we go straight into offline logic
+        var err = new Error('Formio is forced into offline mode.');
+        err.networkError = true;
+        throw err;
+      }
+
+      return Formio.request(url, method, data);
+    })
+    .catch(function(err) {
+      if(!err.networkError) {
+        // A regular error, no offline logic needed
+        throw err;
+      }
+
       // Try to get offline cached response if offline
       var cache = offlineCache[self.projectId];
 
       // Form GET
-      if (type === 'form' && method === 'GET' && offline) {
+      if (type === 'form' && method === 'GET') {
         if (!cache || !cache.forms) {
-          return null;
+          throw err; // No cache available
         }
         // Find and return form
-        return Object.keys(cache.forms).reduce(function(result, name) {
+        var form = Object.keys(cache.forms).reduce(function(result, name) {
           if (result) return result;
           // TODO: verify this works with longform URLs too
           var form = cache.forms[name];
           if (form._id === self.formId || form.path === self.formId) return form;
         }, null);
+
+        if(!form) {
+          err.message += ' (No offline cached data found)';
+          throw err;
+        }
+
+        return form;
       }
 
       // Form INDEX
-      if (type === 'forms' && method === 'GET' && offline) {
+      if (type === 'forms' && method === 'GET') {
         if (!cache || !cache.forms) {
-          return null;
+          throw err; // No cache available
         }
         return cache.forms;
       }
 
-      // Submission POST
-      if (type === 'submission' && method === 'POST' && offline) {
-        // Store request in offline queue
-        offlineQueue.push({
-            type: type,
-            url: url,
-            method: method,
-            data: data
-        });
-        localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(offlineQueue));
-        Formio.offline.emit('queue', offlineQueue[offlineQueue.length - 1]);
-
-        // Send fake response
-        var user = Formio.getUser();
-        return {
-            // _id: can't give an _id,
-            owner: user ? user._id : null,
-            offline: true,
-            form: self.formId,
-            data: data,
-            created: new Date().toISOString(),
-            modified: new Date().toISOString(),
-            externalIds: [],
-            roles: []
-        };
-      }
-
-    })
-    .then(function(result) {
-      // Make regular request if no offline response returned
-      return result || Formio.request(url, method, data);
+      throw err; // No offline logic, just throw the error
     })
     .then(function(result) {
       // Check if need to update cache after request
       var cache = offlineCache[self.projectId];
       if (!cache) return result; // Skip caching
 
-      if (type === 'form' && method !== 'DELETE') {
+      if (type === 'form' && method !== 'DELETE' && !result.offline) {
         cache.forms[result.name] = result;
       }
       else if (type === 'form' && method === 'DELETE') {
         delete cache.forms[result.name];
       }
       else if (type === 'forms' && method === 'GET') {
+        if(result.length && result[0].offline) {
+          return result; // skip caching because this is offline cached data
+        }
         // Don't replace all forms, as some may be omitted due to permissions
         result.forEach(function(form) {
           cache.forms[form.name] = form;
@@ -408,6 +426,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         })
         .catch(function(err) {
           err.message = 'Could not connect to API server (' + err.message + ')';
+          err.networkError = true;
           throw err;
         })
         .then(function(response) {
@@ -444,6 +463,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
       }
     })
     .then(function(result) {
+      // TODO: don't cache offline results
       // Save the cache
       if (method === 'GET') {
         cache[cacheKey] = Q(result);
@@ -565,7 +585,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
 
     var projectPromise;
     // Offline
-    // if (Formio.isOffline()) {
+    // if (Formio.isForcedOffline()) {
       // Try to return cached first
       var cached = localStorage.getItem(OFFLINE_CACHE_PREFIX + projectId);
       if (cached) {
@@ -578,11 +598,12 @@ module.exports = function(_baseUrl, _noalias, _domain) {
           return response.json();
         })
         .then(function(project) {
-          Object.keys(project.forms.forms).forEach(function(formName) {
+          Object.keys(project.forms).forEach(function(formName) {
             // Set modified time as early as possible so any newer
             // form will override this one if there's a name conflict.
             project.forms[formName].created = new Date(0).toISOString();
             project.forms[formName].modified = new Date(0).toISOString();
+            project.forms[formName].offline = true;
           });
           return project;
         });
@@ -636,65 +657,141 @@ module.exports = function(_baseUrl, _noalias, _domain) {
    * Forces Formio to go into offline mode.
    * @param offline
    */
-  Formio.setOffline = function(offline) {
-    var oldOffline = Formio.isOffline();
-    forceOffline = offline;
-
-    // If autoDequeue enabled and was offline before
-    // and not now, start dequeuing
-    if(autoDequeue && oldOffline && !Formio.isOffline()) {
-      Formio.dequeueOfflineRequests();
-    }
+  Formio.forceOffline = function(offline) {
+    forcedOffline = offline;
   };
 
   /**
    * @return true if Formio is in offline mode (forced or not),
    *         false otherwise
    */
-  Formio.isOffline = function() {
-    return forceOffline || !navigator.onLine;
-  };
-
-  Formio.setAutoDequeue = function(auto) {
-    autoDequeue = auto;
+  Formio.isForcedOffline = function() {
+    return forcedOffline;
   };
 
   /**
-   * Attempts to send requests queued while offline.
-   * Each request is sent one at a time. A request that
-   * fails will emit the `formError` event on Formio.offline,
-   * and stop dequeuing further requests.
+   * Sets whether form submission requests should
+   * be queued. If enabled, submissions are queued to run one
+   * after another. Failed submissions halt the queue, which
+   * can be restarted by calling Formio.dequeueSubmissions().
+   *
+   * If disabled (default), submission requests are sent immediately.
+   * @param queue
    */
-  Formio.dequeueOfflineRequests = function() {
-    if(currentOfflineRequest || !offlineQueue.length) {
-      return;
-    }
-    currentOfflineRequest = offlineQueue.shift();
-    Formio.offline.emit('dequeue', currentOfflineRequest);
-    Formio.request(currentOfflineRequest.url, currentOfflineRequest.method, currentOfflineRequest.data)
-    .then(function(submission) {
-      Formio.offline.emit('formSubmission', submission);
-      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(offlineQueue));
-
-      // Continue to next queue item
-      currentOfflineRequest = null;
-      Formio.dequeueOfflineRequests();
-    })
-    .catch(function(err) {
-      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(offlineQueue));
-      var request = currentOfflineRequest;
-      currentOfflineRequest = null;
-      Formio.offline.emit('formError', request);
-      // Stop sending requests
-    });
+  Formio.queueSubmissions = function(queue) {
+    queueSubmissions = queue;
   };
 
-  window.addEventListener('online', function() {
-    if(autoDequeue) {
-      Formio.dequeueOfflineRequests();
-    }
-  });
+  /**
+   * Returns number of submissions left in submission queue.
+   */
+  Formio.submissionQueueLength = function() {
+    return submissionQueue.length;
+  };
 
+  /**
+   * Gets the next queued submission to be sent.
+   */
+  Formio.getNextQueuedSubmission = function() {
+    return submissionQueue[0];
+  };
+
+  /**
+   * Modifies the next queued submission to be sent.
+   */
+  Formio.setNextQueuedSubmission = function(request) {
+    submissionQueue[0].request = request;
+  };
+
+  /**
+   * Skips the next queued submission to be sent.
+   */
+  Formio.skipNextQueuedSubmission = function() {
+    submissionQueue.shift();
+    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(submissionQueue));
+  };
+
+  /**
+   * Attempts to send queued submission requests.
+   * Each request is sent one at a time. A request that
+   * fails will emit the `formError` event on Formio.offline,
+   * and stop dequeuing further requests
+   */
+  Formio.dequeueSubmissions = function() {
+    if(dequeuing || !submissionQueue.length) {
+      return;
+    }
+    var request = submissionQueue[0].request;
+    dequeuing = true;
+
+    var requestPromise;
+    if(Formio.isForcedOffline()) {
+      // Fake a network error so we go straight into offline logic
+      var err = new Error('Formio is forced into offline mode.');
+      err.networkError = true;
+      requestPromise = Q.reject(err);
+    }
+    else {
+      Formio.offline.emit('dequeue', request);
+      requestPromise = Q(Formio.request(request.url, request.method, request.data));
+    }
+
+    requestPromise
+    .then(function(submission) {
+      // Remove request from queue
+      var queuedRequest = submissionQueue.shift();
+      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(submissionQueue));
+
+      // Resolve promise if it hasn't already been resolved with a fake value
+      // TODO: figure out how to find out if this promise was deserialized
+      if(queuedRequest.deferred.promise.inspect && queuedRequest.deferred.promise.inspect().state === 'pending') {
+        queuedRequest.deferred.resolve(submission);
+      }
+      Formio.offline.emit('formSubmission', submission);
+
+      // Continue to next queue item
+      dequeuing = false;
+      Formio.dequeueSubmissions();
+    })
+    .catch(function(err) {
+      // Stop dequeuing because we got a network error trying to request
+      dequeuing = null;
+
+      if (!err.networkError) {
+        var queuedRequest = submissionQueue[0];
+        if(queuedRequest.deferred.promise.inspect && queuedRequest.deferred.promise.inspect().state === 'pending') {
+          queuedRequest.deferred.reject(err);
+        }
+        Formio.offline.emit('formError', request);
+      }
+
+      // Emit an event indicating that the request will be retried later
+      // if it hasn't already been removed from the queue
+      if (queuedRequest === submissionQueue[0]) {
+        Formio.offline.emit('requeue', request);
+      }
+
+      // Go through all queued requests and resolve with fake data so
+      // app can continue offline
+      submissionQueue.forEach(function(queuedRequest) {
+        if(queuedRequest.deferred.promise.inspect && queuedRequest.deferred.promise.inspect().state === 'pending') {
+          var user = Formio.getUser();
+          queuedRequest.deferred.resolve({
+            // _id: can't give an _id,
+            owner: user ? user._id : null,
+            offline: true,
+            form: queuedRequest.request.formId,
+            data: queuedRequest.request.data,
+            created: new Date().toISOString(),
+            modified: new Date().toISOString(),
+            externalIds: [],
+            roles: []
+          });
+        }
+      });
+
+    });
+  };
 
   return Formio;
 };
