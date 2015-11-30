@@ -3,6 +3,8 @@
 require('whatwg-fetch');
 var Q = require('Q');
 var EventEmitter = require('eventemitter3');
+var ObjectId = require('bson-objectid');
+var copy = require('shallow-copy');
 
 var localForage = require('localforage').createInstance({
   name: 'formio',
@@ -114,6 +116,18 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     });
     savingPromise = ready;
     return ready;
+  };
+
+  // Finds and returns a submission from the submission queue
+  var getSubmissionFromQueue = function(id) {
+    var submission;
+    return submissionQueue.reduce(function(result, queuedRequest) {
+      // TODO: handle PUT requests and modify the result with them
+      if (queuedRequest.request.data._id === id) {
+        return queuedRequest.request.data;
+      }
+      return result;
+    }, null);
   };
 
   // The formio class.
@@ -229,12 +243,12 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   var _load = function(type) {
     var _id = type + 'Id';
     var _url = type + 'Url';
-    return function(query) {
+    return function(query, opts) {
       if (typeof query === 'object') {
         query = '?' + serialize(query.params);
       }
       if (!this[_id]) { return Q.reject('Missing ' + _id); }
-      return this.makeRequest(type, this[_url] + this.query);
+      return this.makeRequest(type, this[_url] + this.query, 'get', null, opts);
     };
   };
 
@@ -248,11 +262,11 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   var _save = function(type) {
     var _id = type + 'Id';
     var _url = type + 'Url';
-    return function(data) {
+    return function(data, opts) {
       var method = this[_id] ? 'put' : 'post';
       var reqUrl = this[_id] ? this[_url] : this[type + 'sUrl'];
       cache = {};
-      return this.makeRequest(type, reqUrl + this.query, method, data);
+      return this.makeRequest(type, reqUrl + this.query, method, data, opts);
     };
   };
 
@@ -266,10 +280,10 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   var _delete = function(type) {
     var _id = type + 'Id';
     var _url = type + 'Url';
-    return function() {
+    return function(opts) {
       if (!this[_id]) { Q.reject('Nothing to delete'); }
       cache = {};
-      return this.makeRequest(type, this[_url], 'delete');
+      return this.makeRequest(type, this[_url], 'delete', null, opts);
     };
   };
 
@@ -282,25 +296,28 @@ module.exports = function(_baseUrl, _noalias, _domain) {
    */
   var _index = function(type) {
     var _url = type + 'Url';
-    return function(query) {
+    return function(query, opts) {
       query = query || '';
       if (typeof query === 'object') {
         query = '?' + serialize(query.params);
       }
-      return this.makeRequest(type, this[_url] + query);
+      return this.makeRequest(type, this[_url] + query, 'get', null, opts);
     };
   };
 
   // Returns cached results if offline, otherwise calls Formio.request
-  Formio.prototype.makeRequest = function(type, url, method, data) {
+  Formio.prototype.makeRequest = function(type, url, method, data, opts) {
     var self = this;
     method = (method || 'GET').toUpperCase();
+    if(!opts || typeof opts !== 'object') {
+      opts = {};
+    }
 
     return ready // Wait until offline caching is finished
     .then(function() {
       // If queuing is enabled, requests need to be queued regardless of if
       // we're online or offline.
-      if (queueSubmissions && type === 'submission' && method === 'POST') {
+      if (queueSubmissions && !opts.skipQueue && type === 'submission' && method === 'POST') {
         // Push request to end of offline queue
         var queuedRequest = {
             request: {
@@ -308,7 +325,8 @@ module.exports = function(_baseUrl, _noalias, _domain) {
               url: url,
               method: method,
               data: data,
-              form: self.formId
+              form: self.formId,
+              formUrl: self.formUrl
             }
         };
         // Set enumerable to false, IndexedDB doesn't like serializing
@@ -375,6 +393,17 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         return cache.forms;
       }
 
+      // Submission GET
+      if (type === 'submission' && method === 'GET') {
+        // TODO: first check the offline submission cache
+        // next check the submission queue
+        var submission = getSubmissionFromQueue(self.submissionId);
+        if(submission) {
+          return submission;
+        }
+
+      }
+
       throw err; // No offline logic, just throw the error
     })
     .then(function(result) {
@@ -387,7 +416,9 @@ module.exports = function(_baseUrl, _noalias, _domain) {
           // Cache is up to date
           return result;
         }
-        cache.forms[result.name] = result;
+        var cachedResult = copy(result);
+        cachedResult.offline = true;
+        cache.forms[result.name] = cachedResult;
       }
       else if (type === 'form' && method === 'DELETE') {
         delete cache.forms[result.name];
@@ -398,7 +429,9 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         }
         // Don't replace all forms, as some may be omitted due to permissions
         result.forEach(function(form) {
-          cache.forms[form.name] = form;
+          var cachedForm = copy(form);
+          cachedForm.offline = true;
+          cache.forms[form.name] = cachedForm;
         });
       }
       else {
@@ -626,7 +659,69 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   Formio.cacheOfflineProject = function(url, path) {
     var formio = new Formio(url);
     var projectId = formio.projectId;
-    var projectUrl = formio.projectUrl;
+
+    var projectPromise = localForage.getItem(OFFLINE_CACHE_PREFIX + projectId)
+    .then(function(cached) {
+      if (cached) {
+        return cached;
+      }
+
+      // Otherwise grab offline project definition
+      else if (path) {
+        return fetch(path)
+        .then(function(response) {
+          return response.json();
+        })
+        .then(function(project) {
+          project.forms = project.forms || {};
+
+          // Move resources into forms collection, easier to manage that way
+          Object.keys(project.resources || {}).forEach(function(resourceName) {
+            project.forms[resourceName] = project.resources[resourceName];
+          });
+          delete project.resources;
+
+          Object.keys(project.forms).forEach(function(formName) {
+            // Set modified time as early as possible so any newer
+            // form will override this one if there's a name conflict.
+            project.forms[formName].created = new Date(0).toISOString();
+            project.forms[formName].modified = new Date(0).toISOString();
+            project.forms[formName].offline = true;
+          });
+          return project;
+        });
+      }
+
+      else {
+        // Return an empty project so requests start caching offline.
+        return { forms: {} };
+      }
+
+    });
+
+    // Add this promise to the ready chain
+    ready = ready.thenResolve(projectPromise)
+    .then(function(project) {
+      offlineCache[projectId] = project;
+      return localForage.setItem(OFFLINE_CACHE_PREFIX + projectId, project);
+    })
+    .catch(function(err) {
+      console.error('Error trying to cache offline storage:', err);
+      // Swallow the error so failing caching doesn't halt the ready promise chain
+    });
+    return ready;
+  };
+
+  /**
+   * Sets up a project to be cached offline
+   * @param  url  The url to the project (same as you would pass to Formio constructor)
+   * @param  path Optional. Path to local project.json definition to get initial project forms from if offline.
+   * @return {[type]}      [description]
+   */
+  Formio.cacheOfflineFormSubmissions = function(url, skipRequest) {
+    var formio = new Formio(url);
+    var projectId = formio.projectId;
+    var formId = formio.formId;
 
     var projectPromise = localForage.getItem(OFFLINE_CACHE_PREFIX + projectId)
     .then(function(cached) {
@@ -745,7 +840,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
    * queued submission to be sent.
    */
   Formio.getNextQueuedSubmission = function() {
-    return submissionQueue[0];
+    return submissionQueue[0].request;
   };
 
   /**
@@ -776,9 +871,15 @@ module.exports = function(_baseUrl, _noalias, _domain) {
    */
   Formio.dequeueSubmissions = function() {
     ready.then(function() {
-      if (dequeuing || !submissionQueue.length) {
+      if (dequeuing) {
         return;
       }
+
+      if (!submissionQueue.length) {
+        Formio.offline.emit('queueEmpty');
+        return;
+      }
+
       var request = submissionQueue[0].request;
       dequeuing = true;
 
@@ -805,7 +906,10 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         if(queuedRequest.deferred && queuedRequest.deferred.promise.inspect().state === 'pending') {
           queuedRequest.deferred.resolve(submission);
         }
-        Formio.offline.emit('formSubmission', submission);
+        else {
+          // Emit submission if promise isn't available to reject
+          Formio.offline.emit('formSubmission', submission);
+        }
 
         // Continue to next queue item
         dequeuing = false;
@@ -818,9 +922,15 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         if (!err.networkError) {
           var queuedRequest = submissionQueue[0];
           if(queuedRequest.deferred && queuedRequest.deferred.promise.inspect().state === 'pending') {
+            // If we can reject the promise, no need to keep it in the queue
+            submissionQueue.shift();
+            saveQueue();
             queuedRequest.deferred.reject(err);
           }
-          Formio.offline.emit('formError', request);
+          else {
+            // Emit error if promise isn't available to reject
+            Formio.offline.emit('formError', err, request);
+          }
         }
 
         // Emit an event indicating that the request will be retried later
@@ -833,12 +943,15 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         // app can continue offline
         submissionQueue.forEach(function(queuedRequest) {
           if(queuedRequest.deferred && queuedRequest.deferred.promise.inspect().state === 'pending') {
+            var _id = ObjectId.generate();
             var user = Formio.getUser();
+
+            queuedRequest.request.data._id = _id;
             queuedRequest.deferred.resolve({
-              // _id: can't give an _id,
+              _id: _id,
               owner: user ? user._id : null,
               offline: true,
-              form: queuedRequest.request.formId,
+              form: queuedRequest.request.form,
               data: queuedRequest.request.data,
               created: new Date().toISOString(),
               modified: new Date().toISOString(),
@@ -847,6 +960,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
             });
           }
         });
+        saveQueue();
 
       });
     });
