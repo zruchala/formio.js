@@ -15,6 +15,7 @@ var localForage = require('localforage').createInstance({
 
 // Prefix used with offline cache entries in localForage
 var OFFLINE_CACHE_PREFIX = 'formioCache-';
+var OFFLINE_SUBMISISON_CACHE_PREFIX = 'formioSubmissionCache-';
 var OFFLINE_QUEUE_KEY = 'formioOfflineQueue';
 
 module.exports = function(_baseUrl, _noalias, _domain) {
@@ -118,16 +119,47 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     return ready;
   };
 
-  // Finds and returns a submission from the submission queue
-  var getSubmissionFromQueue = function(id) {
-    var submission;
-    return submissionQueue.reduce(function(result, queuedRequest) {
+  var saveSubmission = function(formId, submission) {
+    console.log('saving submission', formId, submission._id);
+    var offlineSubmission = copy(submission);
+    offlineSubmission.offline = true;
+    return localForage.setItem(
+      OFFLINE_SUBMISISON_CACHE_PREFIX + formId + '-' + submission._id,
+      offlineSubmission
+    );
+  };
+
+  // Finds and returns a submission from the offline data
+  var getOfflineSubmission = function(formId, submissionId) {
+    // Try to load offline cached submission
+    return localForage.getItem(
+      OFFLINE_SUBMISISON_CACHE_PREFIX + formId + '-' + submissionId
+    ).then(function(submission) {
+      // Go through the submission queue for any newer submissions
       // TODO: handle PUT requests and modify the result with them
-      if (queuedRequest.request.data._id === id) {
-        return queuedRequest.request.data;
-      }
-      return result;
-    }, null);
+      return submissionQueue.reduce(function(result, queuedRequest) {
+        if (queuedRequest.request.data._id === submissionId) {
+          return queuedRequest.request.data;
+        }
+        return result;
+      }, submission);
+    });
+  };
+
+  // A unique filter function to be used with Array.prototype.filter
+  var uniqueFilter = function(value, index, self) {
+    return self.indexOf(value) === index;
+  };
+
+  // Returns all queued submission id's for a given form
+  var getQueuedSubmissionIds = function(formId) {
+    return submissionQueue.filter(function(queuedRequest) {
+      return queuedRequest.request.form === formId;
+    })
+    .map(function(queuedRequest) {
+      return queuedRequest.request.data._id;
+    })
+    .filter(uniqueFilter);
   };
 
   // The formio class.
@@ -395,13 +427,36 @@ module.exports = function(_baseUrl, _noalias, _domain) {
 
       // Submission GET
       if (type === 'submission' && method === 'GET') {
-        // TODO: first check the offline submission cache
-        // next check the submission queue
-        var submission = getSubmissionFromQueue(self.submissionId);
-        if(submission) {
+        return getOfflineSubmission(self.formId, self.submissionId)
+        .then(function(submission) {
+          if(!submission) {
+            throw err;
+          }
           return submission;
-        }
+        });
+      }
 
+      // Submission INDEX
+      if (type === 'submissions' && method === 'GET') {
+        return localForage.keys()
+        .then(function(keys) {
+          keys = keys.concat(
+            getQueuedSubmissionIds(self.formId)
+            .map(function(submissionId) {
+              return OFFLINE_SUBMISISON_CACHE_PREFIX + self.formId + '-' + submissionId
+            })
+          ).filter(uniqueFilter);
+
+          return Q.all(
+            keys.filter(function(key) {
+              return key.indexOf(OFFLINE_SUBMISISON_CACHE_PREFIX + self.formId) === 0;
+            })
+            .map(function(key) {
+              var submissionId = key.split('-')[2];
+              return getOfflineSubmission(self.formId, submissionId);
+            })
+          );
+        });
       }
 
       throw err; // No offline logic, just throw the error
@@ -412,7 +467,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
       if (!cache) return result; // Skip caching
 
       if (type === 'form' && method !== 'DELETE' && !result.offline) {
-        if(new Date(cache.forms[result.name].modified) >= new Date(result.modified)) {
+        if (new Date(cache.forms[result.name].modified) >= new Date(result.modified)) {
           // Cache is up to date
           return result;
         }
@@ -424,7 +479,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         delete cache.forms[result.name];
       }
       else if (type === 'forms' && method === 'GET') {
-        if(result.length && result[0].offline) {
+        if (result.length && result[0].offline) {
           return result; // skip caching because this is offline cached data
         }
         // Don't replace all forms, as some may be omitted due to permissions
@@ -433,6 +488,26 @@ module.exports = function(_baseUrl, _noalias, _domain) {
           cachedForm.offline = true;
           cache.forms[form.name] = cachedForm;
         });
+      }
+      else if (type === 'submission' && method !== 'DELETE' && !result.offline) {
+        saveSubmission(self.formId, result)
+        .then(function() {
+          return result;
+        });
+      }
+      else if (type === 'submission' && method === 'DELETE') {
+        return localForage.removeItem(
+          OFFLINE_SUBMISISON_CACHE_PREFIX + self.formId + '-' + self.submissionId
+        ).then(function() {
+          return result;
+        });
+      }
+      else if (type === 'submissions' && method === 'GET') {
+        if(result.length && result[0].offline) {
+          return result; // skip caching because this is offline cached data
+        }
+        Q.all(result.map(saveSubmission.bind(null, self.formId)))
+        .thenResolve(result);
       }
       else {
         // Nothing to cache
@@ -518,7 +593,21 @@ module.exports = function(_baseUrl, _noalias, _domain) {
             if (response.status === 204) {
               return {};
             }
-            return response.json();
+            return response.json()
+            .then(function(result) {
+              // Add some content-range metadata to the result here
+              var range = response.headers.get('content-range');
+              if (range) {
+                range = range.split('/');
+                if(range[0] !== '*') {
+                  var skipLimit = range[0].split('-');
+                  result.skip = Number(skipLimit[0]);
+                  result.limit = skipLimit[1] - skipLimit[0] + 1;
+                }
+                result.serverCount = range[1] === '*' ? range[1] : Number(range[1]);
+              }
+              return result;
+            });
           }
           else {
             if (response.status === 440) {
@@ -901,7 +990,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         // Remove request from queue
         var queuedRequest = submissionQueue.shift();
         saveQueue();
-
+        saveSubmission(queuedRequest.request.form, queuedRequest.request.data);
         // Resolve promise if it hasn't already been resolved with a fake value
         if(queuedRequest.deferred && queuedRequest.deferred.promise.inspect().state === 'pending') {
           queuedRequest.deferred.resolve(submission);
@@ -943,21 +1032,20 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         // app can continue offline
         submissionQueue.forEach(function(queuedRequest) {
           if(queuedRequest.deferred && queuedRequest.deferred.promise.inspect().state === 'pending') {
-            var _id = ObjectId.generate();
             var user = Formio.getUser();
 
-            queuedRequest.request.data._id = _id;
-            queuedRequest.deferred.resolve({
-              _id: _id,
+            queuedRequest.request.data = {
+              _id: ObjectId.generate(),
               owner: user ? user._id : null,
               offline: true,
               form: queuedRequest.request.form,
-              data: queuedRequest.request.data,
+              data: queuedRequest.request.data.data,
               created: new Date().toISOString(),
               modified: new Date().toISOString(),
               externalIds: [],
               roles: []
-            });
+            };
+            queuedRequest.deferred.resolve(queuedRequest.request.data);
           }
         });
         saveQueue();
