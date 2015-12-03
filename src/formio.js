@@ -5,6 +5,9 @@ var Q = require('Q');
 var EventEmitter = require('eventemitter3');
 var ObjectId = require('bson-objectid');
 var copy = require('shallow-copy');
+var querystring = require('querystring');
+var _get = require('lodash.get');
+var _sortByOrder = require('lodash.sortByOrder');
 
 var localForage = require('localforage').createInstance({
   name: 'formio',
@@ -37,6 +40,9 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   var loadSubmissionQueuePromise = localForage.getItem(OFFLINE_QUEUE_KEY)
   .then(function(queue) {
     submissionQueue = queue || [];
+  })
+  .catch(function(err) {
+    console.error('Failed to restore offline submission queue:', err);
   });
   ready = ready.thenResolve(loadSubmissionQueuePromise);
 
@@ -119,22 +125,36 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     return ready;
   };
 
-  var saveSubmission = function(formId, submission) {
+  var saveOfflineSubmission = function(formId, submission) {
+    var formInfo = resolveFormId(formId);
+    formId = formInfo.path || formInfo._id;
     console.log('saving submission', formId, submission._id);
+    if(!submission._id) {
+      debugger;
+    }
     var offlineSubmission = copy(submission);
     offlineSubmission.offline = true;
     return localForage.setItem(
       OFFLINE_SUBMISISON_CACHE_PREFIX + formId + '-' + submission._id,
       offlineSubmission
-    );
+    ).catch(function(err) {
+      console.error('Failed to save offline submission:', err);
+      throw err;
+    });
   };
 
   // Finds and returns a submission from the offline data
   var getOfflineSubmission = function(formId, submissionId) {
+    var formInfo = resolveFormId(formId);
     // Try to load offline cached submission
     return localForage.getItem(
-      OFFLINE_SUBMISISON_CACHE_PREFIX + formId + '-' + submissionId
+      OFFLINE_SUBMISISON_CACHE_PREFIX + formInfo.path + '-' + submissionId
     ).then(function(submission) {
+      return submission || localForage.getItem(
+        OFFLINE_SUBMISISON_CACHE_PREFIX + formInfo._id + '-' + submissionId
+      );
+    })
+    .then(function(submission) {
       // Go through the submission queue for any newer submissions
       // TODO: handle PUT requests and modify the result with them
       return submissionQueue.reduce(function(result, queuedRequest) {
@@ -143,6 +163,10 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         }
         return result;
       }, submission);
+    })
+    .catch(function(err) {
+      console.error('Failed to retrieve offline submission:', err);
+      throw err;
     });
   };
 
@@ -153,14 +177,59 @@ module.exports = function(_baseUrl, _noalias, _domain) {
 
   // Returns all queued submission id's for a given form
   var getQueuedSubmissionIds = function(formId) {
+    var formInfo = resolveFormId(formId);
     return submissionQueue.filter(function(queuedRequest) {
-      return queuedRequest.request.form === formId;
+      return queuedRequest.request.form === formInfo.path ||
+        queuedRequest.request.form === formInfo._id;
     })
     .map(function(queuedRequest) {
       return queuedRequest.request.data._id;
     })
     .filter(uniqueFilter);
   };
+
+  // Given a form _id or path, returns an object with both
+  // if available offline
+  var resolveFormId = function(formId) {
+    if (ObjectId.isValid(formId)) {
+      // formId is the form's _id
+      var result = {
+        _id: formId,
+        path: null
+      };
+      Object.keys(offlineCache).forEach(function(projectId) {
+        Object.keys(offlineCache[projectId].forms).forEach(function(formPath) {
+          var form = offlineCache[projectId].forms[formPath];
+          if (form._id === formId) {
+            result = {
+              _id: formId,
+              path: formPath
+            };
+          }
+        });
+      });
+
+      return result;
+    }
+    else {
+      // formId is the form's path
+      var result = {
+        _id: null,
+        path: formId
+      }
+      Object.keys(offlineCache).forEach(function(projectId) {
+        var form = offlineCache[projectId].forms[formId];
+        if (form) {
+          result = {
+            _id: form._id,
+            path: formId
+          };
+        }
+      });
+
+      return result;
+    }
+  }
 
   // The formio class.
   var Formio = function(path) {
@@ -404,7 +473,6 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         // Find and return form
         var form = Object.keys(cache.forms).reduce(function(result, name) {
           if (result) return result;
-          // TODO: verify this works with longform URLs too
           var form = cache.forms[name];
           if (form._id === self.formId || form.path === self.formId) return form;
         }, null);
@@ -446,16 +514,100 @@ module.exports = function(_baseUrl, _noalias, _domain) {
               return OFFLINE_SUBMISISON_CACHE_PREFIX + self.formId + '-' + submissionId
             })
           ).filter(uniqueFilter);
+          var formInfo = resolveFormId(self.formId);
 
           return Q.all(
             keys.filter(function(key) {
-              return key.indexOf(OFFLINE_SUBMISISON_CACHE_PREFIX + self.formId) === 0;
+              return key.indexOf(OFFLINE_SUBMISISON_CACHE_PREFIX + formInfo.path) === 0 ||
+                key.indexOf(OFFLINE_SUBMISISON_CACHE_PREFIX + formInfo._id) === 0;
             })
             .map(function(key) {
               var submissionId = key.split('-')[2];
               return getOfflineSubmission(self.formId, submissionId);
             })
-          );
+          ).then(function(submissions) {
+            var serverCount = submissions.length;
+            var qs = querystring.parse(url.split('?')[1] || '');
+
+            if (qs.sort) {
+              var sort = (qs.sort).split(/\s+/);
+              var order = [];
+              sort = sort.map(function(prop) {
+                if (prop.charAt(0) === '-') {
+                  order.push('desc');
+                  return prop.substring(1);
+                }
+                order.push('asc');
+                return prop;
+              });
+              submissions = _sortByOrder(submissions, sort, order);
+            }
+
+
+            Object.keys(qs).forEach(function(param) {
+              var value = qs[param];
+              var filter = param.split('__')[1];
+              var param = param.split('__')[0];
+              var filterFn = null;
+              switch(param) {
+                case 'sort':
+                case 'limit':
+                case 'skip':
+                case 'select': break; // Do nothing
+                default:
+                  switch(filter) {
+                    case undefined: filterFn = function(submission) {
+                        return _get(submission, param) == value;
+                      };
+                      break;
+                    case 'ne': filterFn = function(submission) {
+                        return _get(submission, param) != value;
+                      };
+                      break;
+                    case 'gt': filterFn = function(submission) {
+                        return _get(submission, param) > value;
+                      };
+                      break;
+                    case 'gte': filterFn = function(submission) {
+                        return _get(submission, param) >= value;
+                      };
+                      break;
+                    case 'lt': filterFn = function(submission) {
+                        return _get(submission, param) < value;
+                      };
+                      break;
+                    case 'lte': filterFn = function(submission) {
+                        return _get(submission, param) <= value;
+                      };
+                      break;
+                    case 'in': filterFn = function(submission) {
+                        return value.split(',').indexOf(_get(submission, param)) !== -1;
+                      };
+                      break;
+                    case 'regex': filterFn = function(submission) {
+                        var parts = value.match(/\/?([^/]+)\/?([^/]+)?/);
+                        var regex = new RegExp(parts[1], parts[2]);
+                        return _get(submission, param).match(regex);
+                      };
+                      break;
+                  }
+                  break;
+              }
+              if(filterFn) {
+                submissions = submissions.filter(filterFn);
+              }
+            });
+            var limit = Number(qs.limit) || 10;
+            var skip = Number(qs.skip) || 0;
+            if(skip !== 0 || limit < submissions.length) {
+              submissions = submissions.slice(skip, skip + limit);
+            }
+            submissions.limit = limit;
+            submissions.skip = skip;
+            submissions.serverCount = serverCount;
+
+            return submissions;
+          });
         });
       }
 
@@ -490,15 +642,25 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         });
       }
       else if (type === 'submission' && method !== 'DELETE' && !result.offline) {
-        saveSubmission(self.formId, result)
+        return saveOfflineSubmission(self.formId, result)
         .then(function() {
           return result;
         });
       }
       else if (type === 'submission' && method === 'DELETE') {
-        return localForage.removeItem(
-          OFFLINE_SUBMISISON_CACHE_PREFIX + self.formId + '-' + self.submissionId
-        ).then(function() {
+        var formInfo = resolveFormId(self.formId);
+        return Q.all([
+          localForage.removeItem(
+            OFFLINE_SUBMISISON_CACHE_PREFIX + formInfo.path + '-' + self.submissionId
+          ),
+          localForage.removeItem(
+            OFFLINE_SUBMISISON_CACHE_PREFIX + formInfo._id + '-' + self.submissionId
+          ),
+        ])
+        .catch(function(err) {
+          console.error('Failed to delete offline submission:', err);
+        })
+        .then(function() {
           return result;
         });
       }
@@ -506,7 +668,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         if(result.length && result[0].offline) {
           return result; // skip caching because this is offline cached data
         }
-        Q.all(result.map(saveSubmission.bind(null, self.formId)))
+        return Q.all(result.map(saveOfflineSubmission.bind(null, self.formId)))
         .thenResolve(result);
       }
       else {
@@ -516,7 +678,11 @@ module.exports = function(_baseUrl, _noalias, _domain) {
 
       // Update localForage
       removeCacheDuplicates(cache); // Clean up duplicates
-      ready = ready.thenResolve(localForage.setItem(OFFLINE_CACHE_PREFIX + self.projectId, cache));
+      ready = ready.thenResolve(localForage.setItem(OFFLINE_CACHE_PREFIX + self.projectId, cache))
+      .catch(function(err) {
+        // Swallow error so it doesn't halt the ready chain
+        console.error(err);
+      });
 
       return result;
     });
@@ -630,7 +796,6 @@ module.exports = function(_baseUrl, _noalias, _domain) {
       }
     })
     .then(function(result) {
-      // TODO: don't cache offline results
       // Save the cache
       if (method === 'GET') {
         cache[cacheKey] = Q(result);
@@ -802,69 +967,6 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   };
 
   /**
-   * Sets up a project to be cached offline
-   * @param  url  The url to the project (same as you would pass to Formio constructor)
-   * @param  path Optional. Path to local project.json definition to get initial project forms from if offline.
-   * @return {[type]}      [description]
-   */
-  Formio.cacheOfflineFormSubmissions = function(url, skipRequest) {
-    var formio = new Formio(url);
-    var projectId = formio.projectId;
-    var formId = formio.formId;
-
-    var projectPromise = localForage.getItem(OFFLINE_CACHE_PREFIX + projectId)
-    .then(function(cached) {
-      if (cached) {
-        return cached;
-      }
-
-      // Otherwise grab offline project definition
-      else if (path) {
-        return fetch(path)
-        .then(function(response) {
-          return response.json();
-        })
-        .then(function(project) {
-          project.forms = project.forms || {};
-
-          // Move resources into forms collection, easier to manage that way
-          Object.keys(project.resources || {}).forEach(function(resourceName) {
-            project.forms[resourceName] = project.resources[resourceName];
-          });
-          delete project.resources;
-
-          Object.keys(project.forms).forEach(function(formName) {
-            // Set modified time as early as possible so any newer
-            // form will override this one if there's a name conflict.
-            project.forms[formName].created = new Date(0).toISOString();
-            project.forms[formName].modified = new Date(0).toISOString();
-            project.forms[formName].offline = true;
-          });
-          return project;
-        });
-      }
-
-      else {
-        // Return an empty project so requests start caching offline.
-        return { forms: {} };
-      }
-
-    });
-
-    // Add this promise to the ready chain
-    ready = ready.thenResolve(projectPromise)
-    .then(function(project) {
-      offlineCache[projectId] = project;
-      return localForage.setItem(OFFLINE_CACHE_PREFIX + projectId, project);
-    })
-    .catch(function(err) {
-      console.error('Error trying to cache offline storage:', err);
-      // Swallow the error so failing caching doesn't halt the ready promise chain
-    });
-    return ready;
-  };
-
-  /**
    * Clears the offline cache. This will also stop previously
    * cached projects from caching future requests for offline access.
    */
@@ -876,7 +978,8 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     localForage.keys()
     .then(function(keys) {
       return Q.all(keys.map(function(key) {
-        if (key.indexOf(OFFLINE_CACHE_PREFIX) === 0) {
+        if (key.indexOf(OFFLINE_CACHE_PREFIX) === 0 ||
+            key.indexOf(OFFLINE_SUBMISISON_CACHE_PREFIX) === 0) {
           return localForage.removeItem(key);
         }
       }));
@@ -990,7 +1093,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         // Remove request from queue
         var queuedRequest = submissionQueue.shift();
         saveQueue();
-        saveSubmission(queuedRequest.request.form, queuedRequest.request.data);
+        saveOfflineSubmission(queuedRequest.request.form, submission);
         // Resolve promise if it hasn't already been resolved with a fake value
         if(queuedRequest.deferred && queuedRequest.deferred.promise.inspect().state === 'pending') {
           queuedRequest.deferred.resolve(submission);
