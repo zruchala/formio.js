@@ -118,20 +118,28 @@ module.exports = function(_baseUrl, _noalias, _domain) {
       return localForage.setItem(OFFLINE_QUEUE_KEY, submissionQueue);
     })
     .catch(function(err) {
-      console.err('Error persisting submission queue:', err);
+      console.error('Error persisting submission queue:', err);
       // Swallow error so it doesn't halt the ready chain
     });
     savingPromise = ready;
     return ready;
   };
 
+  // Returns true if a form is part of a project that has been
+  // cached offline.
+  var isFormOffline = function(formPath) {
+    return Object.keys(offlineCache).some(function(project) {
+      return offlineCache[project].forms[formPath];
+    });
+  }
+
+  // Save a submission to retrieve in GET requests while offline.
   var saveOfflineSubmission = function(formId, submission) {
     var formInfo = resolveFormId(formId);
-    formId = formInfo.path || formInfo._id;
-    console.log('saving submission', formId, submission._id);
-    if(!submission._id) {
-      debugger;
+    if(!isFormOffline(formInfo.path)) {
+      return Q();
     }
+    formId = formInfo.path || formInfo._id;
     var offlineSubmission = copy(submission);
     offlineSubmission.offline = true;
     return localForage.setItem(
@@ -144,7 +152,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   };
 
   // Finds and returns a submission from the offline data
-  var getOfflineSubmission = function(formId, submissionId) {
+  var getOfflineSubmission = function(formId, submissionId, ignoreQueuedRequest) {
     var formInfo = resolveFormId(formId);
     // Try to load offline cached submission
     return localForage.getItem(
@@ -158,8 +166,19 @@ module.exports = function(_baseUrl, _noalias, _domain) {
       // Go through the submission queue for any newer submissions
       // TODO: handle PUT requests and modify the result with them
       return submissionQueue.reduce(function(result, queuedRequest) {
-        if (queuedRequest.request.data._id === submissionId) {
-          return queuedRequest.request.data;
+        if ((queuedRequest.request._id || queuedRequest.request.data._id) === submissionId && queuedRequest !== ignoreQueuedRequest) {
+          if (queuedRequest.request.method === 'POST') {
+            return queuedRequest.request.data;
+          }
+          else if (queuedRequest.request.method === 'PUT') {
+            var resultCopy = copy(result);
+            resultCopy.data = queuedRequest.request.data.data;
+            resultCopy.modified = new Date().toISOString();
+            return resultCopy;
+          }
+          else if (queuedRequest.request.method === 'DELETE') {
+            return null;
+          }
         }
         return result;
       }, submission);
@@ -170,6 +189,23 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     });
   };
 
+  // Deletes a submission from the offline data
+  var deleteOfflineSubmission = function(formId, submissionId) {
+    var formInfo = resolveFormId(formId);
+
+    return Q.all([
+      localForage.removeItem(
+        OFFLINE_SUBMISISON_CACHE_PREFIX + formInfo.path + '-' + submissionId
+      ),
+      localForage.removeItem(
+        OFFLINE_SUBMISISON_CACHE_PREFIX + formInfo._id + '-' + submissionId
+      ),
+    ])
+    .catch(function(err) {
+      console.error('Failed to delete offline submission:', err);
+    });
+  }
+
   // A unique filter function to be used with Array.prototype.filter
   var uniqueFilter = function(value, index, self) {
     return self.indexOf(value) === index;
@@ -179,11 +215,12 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   var getQueuedSubmissionIds = function(formId) {
     var formInfo = resolveFormId(formId);
     return submissionQueue.filter(function(queuedRequest) {
-      return queuedRequest.request.form === formInfo.path ||
-        queuedRequest.request.form === formInfo._id;
+      return (queuedRequest.request.form === formInfo.path ||
+        queuedRequest.request.form === formInfo._id) &&
+        queuedRequest.request.method !== 'DELETE';
     })
     .map(function(queuedRequest) {
-      return queuedRequest.request.data._id;
+      return queuedRequest.request._id || queuedRequest.request.data._id;
     })
     .filter(uniqueFilter);
   };
@@ -418,10 +455,12 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     .then(function() {
       // If queuing is enabled, requests need to be queued regardless of if
       // we're online or offline.
-      if (queueSubmissions && !opts.skipQueue && type === 'submission' && method === 'POST') {
+      if (queueSubmissions && !opts.skipQueue && type === 'submission' &&
+          (method === 'POST' || method === 'PUT' || method === 'DELETE')) {
         // Push request to end of offline queue
         var queuedRequest = {
             request: {
+              _id: self.submissionId,
               type: type,
               url: url,
               method: method,
@@ -526,6 +565,10 @@ module.exports = function(_baseUrl, _noalias, _domain) {
               return getOfflineSubmission(self.formId, submissionId);
             })
           ).then(function(submissions) {
+            // Filter out null (deleted) submissions
+            submissions = submissions.filter(function(submission) {
+              return submission;
+            });
             var serverCount = submissions.length;
             var qs = querystring.parse(url.split('?')[1] || '');
 
@@ -628,7 +671,14 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         cache.forms[result.name] = cachedResult;
       }
       else if (type === 'form' && method === 'DELETE') {
-        delete cache.forms[result.name];
+        var formInfo = resolveFormId(self.formId);
+        var formPath = '';
+        cache.forms.forEach(function(form) {
+          if(form.path === formInfo.path || form._id === formInfo._id) {
+            formPath = form.path;
+          }
+        });
+        delete cache.forms[formPath];
       }
       else if (type === 'forms' && method === 'GET') {
         if (result.length && result[0].offline) {
@@ -649,17 +699,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
       }
       else if (type === 'submission' && method === 'DELETE') {
         var formInfo = resolveFormId(self.formId);
-        return Q.all([
-          localForage.removeItem(
-            OFFLINE_SUBMISISON_CACHE_PREFIX + formInfo.path + '-' + self.submissionId
-          ),
-          localForage.removeItem(
-            OFFLINE_SUBMISISON_CACHE_PREFIX + formInfo._id + '-' + self.submissionId
-          ),
-        ])
-        .catch(function(err) {
-          console.error('Failed to delete offline submission:', err);
-        })
+        return deleteOfflineSubmission(self.formId, self.submissionId)
         .then(function() {
           return result;
         });
@@ -801,7 +841,15 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         cache[cacheKey] = Q(result);
       }
 
-      return result;
+      // Shallow copy result so modifications don't end up in cache
+      if(Array.isArray(result)) {
+        var resultCopy = result.map(copy);
+        resultCopy.skip = result.skip;
+        resultCopy.limit = result.limit;
+        resultCopy.serverCount = result.serverCount;
+        return resultCopy;
+      }
+      return copy(result);
     });
   };
 
@@ -1093,12 +1141,17 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         // Remove request from queue
         var queuedRequest = submissionQueue.shift();
         saveQueue();
-        saveOfflineSubmission(queuedRequest.request.form, submission);
-        // Resolve promise if it hasn't already been resolved with a fake value
-        if(queuedRequest.deferred && queuedRequest.deferred.promise.inspect().state === 'pending') {
-          queuedRequest.deferred.resolve(submission);
+        if (queuedRequest.request.method !== 'DELETE') {
+          saveOfflineSubmission(queuedRequest.request.form, submission);
         }
         else {
+          deleteOfflineSubmission(queuedRequest.request.form, queuedRequest.request._id);
+        }
+        // Resolve promise if it hasn't already been resolved with a fake value
+        if (queuedRequest.deferred && queuedRequest.deferred.promise.inspect().state === 'pending') {
+          queuedRequest.deferred.resolve(submission);
+        }
+        else if (queuedRequest.request.method !== 'DELETE') {
           // Emit submission if promise isn't available to reject
           Formio.offline.emit('formSubmission', submission);
         }
@@ -1134,22 +1187,36 @@ module.exports = function(_baseUrl, _noalias, _domain) {
         // Go through all queued requests and resolve with fake data so
         // app can continue offline
         submissionQueue.forEach(function(queuedRequest) {
-          if(queuedRequest.deferred && queuedRequest.deferred.promise.inspect().state === 'pending') {
+          if (queuedRequest.deferred && queuedRequest.deferred.promise.inspect().state === 'pending') {
             var user = Formio.getUser();
-
-            queuedRequest.request.data = {
-              _id: ObjectId.generate(),
-              owner: user ? user._id : null,
-              offline: true,
-              form: queuedRequest.request.form,
-              data: queuedRequest.request.data.data,
-              created: new Date().toISOString(),
-              modified: new Date().toISOString(),
-              externalIds: [],
-              roles: []
-            };
-            queuedRequest.deferred.resolve(queuedRequest.request.data);
+            if (queuedRequest.request.method === 'POST') {
+              queuedRequest.request.data = {
+                _id: ObjectId.generate(),
+                owner: user ? user._id : null,
+                offline: true,
+                form: queuedRequest.request.form,
+                data: queuedRequest.request.data.data,
+                created: new Date().toISOString(),
+                modified: new Date().toISOString(),
+                externalIds: [],
+                roles: []
+              };
+              queuedRequest.deferred.resolve(queuedRequest.request.data);
+            }
+            else if (queuedRequest.request.method === 'PUT') {
+              getOfflineSubmission(queuedRequest.request.form, queuedRequest.request._id, queuedRequest)
+              .then(function(submission) {
+                submission.data = queuedRequest.request.data.data;
+                submission.modified = new Date().toISOString();
+                queuedRequest.request.data = submission;
+                queuedRequest.deferred.resolve(submission);
+              })
+            }
+            else if (queuedRequest.request.method === 'DELETE') {
+              queuedRequest.deferred.resolve({});
+            }
           }
+
         });
         saveQueue();
 
