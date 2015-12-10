@@ -311,11 +311,35 @@ module.exports = function(_baseUrl, _noalias, _domain) {
   Formio.prototype.saveAction = _save('action');
   Formio.prototype.deleteAction = _delete('action');
   Formio.prototype.loadActions = _index('actions');
-  Formio.prototype.availableActions = function() { return Formio.request(this.formUrl + '/actions'); };
-  Formio.prototype.actionInfo = function(name) { return Formio.request(this.formUrl + '/actions/' + name); };
+  Formio.prototype.availableActions = function() { return this.makeRequest('availableActions', this.formUrl + '/actions'); };
+  Formio.prototype.actionInfo = function(name) { return this.makeRequest('actionInfo', this.formUrl + '/actions/' + name); };
+
+  Formio.makeStaticRequest = function(url, method, data) {
+    var self = this;
+    method = (method || 'GET').toUpperCase();
+
+    var requestArgs = {
+      url: url,
+      method: method,
+      data: data
+    };
+
+    var request = pluginWait('preStaticRequest', requestArgs)
+    .then(function() {
+      return pluginGet('staticRequest', requestArgs)
+      .then(function(result) {
+        if (result === null || result === undefined) {
+          return Formio.request(url, method, data);
+        }
+        return result;
+      });
+    });
+
+    return pluginAlter('wrapStaticRequestPromise', request, requestArgs);
+  }
 
   // Static methods.
-  Formio.loadProjects = function() { return this.request(baseUrl + '/project'); };
+  Formio.loadProjects = function() { return this.makeStaticRequest(baseUrl + '/project'); };
   Formio.request = function(url, method, data) {
     if (!url) { return Q.reject('No url provided'); }
     method = (method || 'GET').toUpperCase();
@@ -366,11 +390,12 @@ module.exports = function(_baseUrl, _noalias, _domain) {
             if (response.status === 204) {
               return {};
             }
-            return response.json()
+            return (response.headers.get('content-type').indexOf('application/json') !== -1 ?
+              response.json() : response.text())
             .then(function(result) {
               // Add some content-range metadata to the result here
               var range = response.headers.get('content-range');
-              if (range) {
+              if (range && typeof result === 'object') {
                 range = range.split('/');
                 if(range[0] !== '*') {
                   var skipLimit = range[0].split('-');
@@ -460,7 +485,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
     if (user) { return Q(user) }
     var token = this.getToken();
     if (!token) { return Q(null) }
-    return this.request(baseUrl + '/current')
+    return this.makeStaticRequest(baseUrl + '/current')
     .then(function(response) {
       Formio.setUser(response);
       return response;
@@ -469,7 +494,7 @@ module.exports = function(_baseUrl, _noalias, _domain) {
 
 // Keep track of their logout callback.
   Formio.logout = function() {
-    return this.request(baseUrl + '/logout').finally(function() {
+    return this.makeStaticRequest(baseUrl + '/logout').finally(function() {
       this.setToken(null);
       this.setUser(null);
       Formio.clearCache();
