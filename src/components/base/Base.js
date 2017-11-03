@@ -73,6 +73,13 @@ export class BaseComponent {
     this._hasCondition = null;
 
     /**
+     * Determines if this component has a disabled condition assigned to it.
+     * @type {null}
+     * @private
+     */
+    this._hasDisabledCondition = null;
+
+    /**
      * The events that are triggered for the whole FormioForm object.
      */
     this.events = this.options.events;
@@ -1053,6 +1060,20 @@ export class BaseComponent {
   }
 
   /**
+   * Determines if this component has a diabled condition defined.
+   *
+   * @return {null}
+   */
+  hasDisabledCondition() {
+    if (this._hasDisabledCondition !== null) {
+      return this._hasDisabledCondition;
+    }
+
+    this._hasDisabledCondition = FormioUtils.hasDisabledCondition(this.component);
+    return this._hasDisabledCondition;
+  }
+
+  /**
    * Check for conditionals and hide/show the element based on those conditions.
    */
   checkConditions(data) {
@@ -1061,6 +1082,17 @@ export class BaseComponent {
     }
 
     return this.show(FormioUtils.checkCondition(this.component, this.data, data));
+  }
+
+  /**
+   * Check for disabled conditionals and disable/enable the element based on those conditions.
+   */
+  checkDisabledConditions(data) {
+    if (!this.hasDisabledCondition()) {
+      return this.disabled(false);
+    }
+
+    return this.disabled(FormioUtils.checkDisabledCondition(this.component, this.data, data));
   }
 
   /**
@@ -1493,6 +1525,30 @@ export class BaseComponent {
   }
 
   /**
+   * Disable or Enable this component.
+   *
+   * @param {boolean} disable
+   */
+  disable(disable) {
+    // Do not allow a component to be disabled if it should be always...
+    if (!disable && this.shouldDisable) {
+      return;
+    }
+
+    this._disabled = disable;
+    // Disable all input.
+    _each(this.inputs, (input) => {
+      input.disabled = disable;
+      if (disable) {
+        input.setAttribute('disabled', 'disabled');
+      }
+      else {
+        input.removeAttribute('disabled');
+      }
+    });
+  }
+
+  /**
    * Return if the component is disabled.
    * @return {boolean}
    */
@@ -1501,27 +1557,12 @@ export class BaseComponent {
   }
 
   /**
-   * Disable this component.
+   * Disable or Enable this component.
    *
    * @param {boolean} disabled
    */
   set disabled(disabled) {
-    // Do not allow a component to be disabled if it should be always...
-    if (!disabled && this.shouldDisable) {
-      return;
-    }
-
-    this._disabled = disabled;
-    // Disable all input.
-    _each(this.inputs, (input) => {
-      input.disabled = disabled;
-      if (disabled) {
-        input.setAttribute('disabled', 'disabled');
-      }
-      else {
-        input.removeAttribute('disabled');
-      }
-    });
+    this.disable(disabled);
   }
 
   selectOptions(select, tag, options, defaultValue) {

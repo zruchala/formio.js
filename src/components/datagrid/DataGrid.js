@@ -106,6 +106,7 @@ export class DataGridComponent extends FormioComponents {
           td.appendChild(comp.element);
           tr.appendChild(td);
           comp.checkConditions(data);
+          comp.checkDisabledConditions(data);
         }
       });
       this.rows.push(cols);

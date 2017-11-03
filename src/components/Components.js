@@ -243,6 +243,7 @@ export class FormioComponents extends BaseComponent {
         noUpdateEvent: true
       });
       comp.checkConditions(data);
+      comp.checkDisabledConditions(data);
       if (!flags.noValidate) {
         valid &= comp.checkValidity(data);
       }

@@ -564,6 +564,7 @@ export class FormioForm extends FormioComponents {
     this.on('submitButton', () => this.submit(), true);
     this.addComponents();
     this.checkConditions(this.getValue());
+    this.checkDisabledConditions(this.getValue());
   }
 
   /**

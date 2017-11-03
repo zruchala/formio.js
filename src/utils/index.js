@@ -232,6 +232,21 @@ const FormioUtils = {
   },
 
   /**
+   * Returns if this component has a disabled conditional statement.
+   *
+   * @param component - The component JSON schema.
+   *
+   * @returns {boolean} - TRUE - This component has a disabled conditional, FALSE - No diabled conditional provided.
+   */
+  hasDisabledCondition: function(component) {
+    return (
+      (component.hasOwnProperty('customDisabledConditional') && component.customDisabledConditional) ||
+      (component.hasOwnProperty('diabledConditional') && component.diabledConditional && component.diabledConditional.when) ||
+      (component.hasOwnProperty('diabledConditional') && component.diabledConditional && component.diabledConditional.json)
+    ) ? true : false;
+  },
+
+  /**
    * Extension of standard #parseFloat(value) function, that also clears input string.
    *
    * @param {any} value
@@ -384,6 +399,66 @@ const FormioUtils = {
 
     // Default to show.
     return true;
+  },
+
+  /**
+   * Checks the disabled conditions for a provided component and data.
+   *
+   * @param component
+   *   The component to check for the disabled condition.
+   * @param row
+   *   The data within a row
+   * @param data
+   *   The full submission data.
+   *
+   * @returns {boolean}
+   */
+  checkDisabledCondition: function(component, row, data) {
+    if (component.hasOwnProperty('customDisabledConditional') && component.customDisabledConditional) {
+      try {
+        var script = '(function() { var disable = false;';
+        script += component.customDisabledConditional.toString();
+        script += '; return disable; })()';
+        var result = eval(script);
+        return result.toString() === 'true';
+      }
+      catch (e) {
+        console.warn('An error occurred in a custom disabled conditional statement for component ' + component.key, e);
+        return true;
+      }
+    }
+    else if (component.hasOwnProperty('disabledConditional') && component.disabledConditional && component.disabledConditional.when) {
+      var cond = component.disabledConditional;
+      var value = null;
+      if (row) {
+        value = this.getValue({data: row}, cond.when);
+      }
+      if (data && (value === null || typeof value === 'undefined')) {
+        value = this.getValue({data: data}, cond.when);
+      }
+      if (value === null || typeof value === 'undefined') {
+        return false;
+      }
+      // Special check for selectboxes component.
+      if (typeof value === 'object' && value.hasOwnProperty(cond.eq)) {
+        return value[cond.eq].toString() === cond.show.toString();
+      }
+      // Check for multiple values.
+      if (value instanceof Array && value.indexOf(cond.eq) !== -1) {
+        return (cond.show.toString() === 'true');
+      }
+
+      return (value.toString() === cond.eq.toString()) === (cond.show.toString() === 'true');
+    }
+    else if (component.hasOwnProperty('disabledConditional') && component.disabledConditional && component.disabledConditional.json) {
+      return jsonLogic.apply(component.disabledConditional.json, {
+        data: data,
+        row: row
+      });
+    }
+
+    // Default to enable.
+    return false;
   },
 
   /**

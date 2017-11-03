@@ -76,6 +76,10 @@ export class FormComponent extends FormioForm {
     return super.checkConditions(data[this.component.key] ? data[this.component.key].data : {});
   }
 
+  checkDisabledConditions(data) {
+    return super.checkDisabledConditions(data[this.component.key] ? data[this.component.key].data : {});
+  }
+
   calculateValue(data, flags) {
     return super.calculateValue(data[this.component.key] ? data[this.component.key].data : {}, flags);
   }
@@ -141,6 +145,9 @@ export class FormComponent extends FormioForm {
 
     // Check conditions for this form.
     this.checkConditions(this.getValue());
+
+    // Check disabled conditions for this form.
+    this.checkDisabledConditions(this.getValue());
   }
 
   setValue(submission, flags) {
