@@ -30,7 +30,6 @@ export class TextAreaComponent extends TextFieldComponent {
     if (!this.component.wysiwyg) {
       return super.createInput(container);
     }
-
     // Normalize the configurations.
     if (this.component.wysiwyg.toolbarGroups) {
       console.warn('The WYSIWYG settings are configured for CKEditor. For this renderer, you will need to use configurations for the Quill Editor. See https://quilljs.com/docs/configuration for more information.');
@@ -55,8 +54,13 @@ export class TextAreaComponent extends TextFieldComponent {
     this.quillReady = BaseComponent.requireLibrary('quill', 'Quill', 'https://cdn.quilljs.com/1.3.3/quill.min.js', true)
       .then(() => {
         this.quill = new Quill(this.input, this.component.wysiwyg);
-
-        /** This block of code adds the [source] capabilities.  See https://codepen.io/anon/pen/ZyEjrQ **/
+    this.quill.keyboard.addBinding({ key: 'tab' }, function(range) {
+      // I will normally prevent handlers of the tab key
+      // Return true to let later handlers be called
+      return false;
+    });
+    this.quill.keyboard.options.bindings.tab = false;
+    /** This block of code adds the [source] capabilities.  See https://codepen.io/anon/pen/ZyEjrQ **/
         var txtArea = document.createElement('textarea');
         txtArea.setAttribute('class', 'quill-source-code');
         this.quill.addContainer('ql-custom').appendChild(txtArea);
@@ -66,6 +70,14 @@ export class TextAreaComponent extends TextFieldComponent {
           }
           txtArea.style.display = (txtArea.style.display === 'none') ? 'inherit' : 'none';
         });
+
+          let buttons = document.querySelectorAll('.ql-formats button');
+
+          for( key in buttons) {
+            buttons[key].addEventListener('focus', () => {
+              this.blur();
+          });
+          }
         /** END CODEBLOCK **/
 
         this.quill.on('text-change', () => {
