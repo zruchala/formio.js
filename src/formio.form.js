@@ -3,6 +3,7 @@ import Promise from "native-promise-only";
 import { FormioComponents } from './components/Components';
 import _each from 'lodash/each';
 import _clone from 'lodash/clone';
+import _cloneDeep from 'lodash/cloneDeep';
 import _debounce from 'lodash/debounce';
 import _remove from 'lodash/remove';
 import _isArray from 'lodash/isArray';
@@ -678,7 +679,7 @@ export class FormioForm extends FormioComponents {
   }
 
   setValue(submission, flags, data) {
-    data = data || this.data;
+    data = data || _cloneDeep(this.data);
     if (!submission) {
       return super.setValue(data, flags);
     }

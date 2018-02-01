@@ -7,6 +7,7 @@ import _ from 'lodash';
 import each from 'lodash/each';
 import clone from 'lodash/clone';
 import defaults from 'lodash/defaults';
+import { FormioComponents } from './components/Components'
 export class FormioWizard extends FormioForm {
   /**
    * Constructor for wizard based forms
@@ -23,6 +24,19 @@ export class FormioWizard extends FormioForm {
     this.page = 0;
     this.history = [];
     this._nextPage = 0;
+    this._setValue = FormioComponents.prototype.setValue.bind(this);
+  }
+
+  setValue(submission, flags, data) {
+    data = data || this.data;
+    if (!submission) {
+      return this._setValue(data, flags);
+    }
+    submission = submission || {data: {}};
+    this.mergeData(data, submission.data);
+    this._submission = submission;
+    this._submission.data = data;
+    return this._setValue(data, flags);
   }
 
   setPage(num) {
