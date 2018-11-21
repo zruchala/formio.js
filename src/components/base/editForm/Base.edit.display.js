@@ -140,20 +140,20 @@ export default [
     placeholder: 'Tab Index',
     tooltip: 'Sets the tabindex attribute of this component to override the tab order of the form. See the <a href=\\\'https://developer.mozilla.org/en-US/docs/Web/HTML/Global_attributes/tabindex\\\'>MDN documentation</a> on tabindex for more information.'
   },
-  {
-    weight: 700,
-    type: 'radio',
-    label: 'Persistent',
-    tooltip: 'A persistent field will be stored in database when the form is submitted.',
-    key: 'persistent',
-    input: true,
-    inline: true,
-    values: [
-      { label: 'None', value: false },
-      { label: 'Server', value: true },
-      { label: 'Client', value: 'client-only' },
-    ]
-  },
+  // {
+  //   weight: 700,
+  //   type: 'radio',
+  //   label: 'Persistent',
+  //   tooltip: 'A persistent field will be stored in database when the form is submitted.',
+  //   key: 'persistent',
+  //   input: true,
+  //   inline: true,
+  //   values: [
+  //     { label: 'None', value: false },
+  //     { label: 'Server', value: true },
+  //     { label: 'Client', value: 'client-only' },
+  //   ]
+  // },
   {
     weight: 800,
     type: 'checkbox',
@@ -170,14 +170,14 @@ export default [
     tooltip: 'When a field is hidden, clear the value.',
     input: true
   },
-  {
-    weight: 1000,
-    type: 'checkbox',
-    label: 'Protected',
-    tooltip: 'A protected field will not be returned when queried via API.',
-    key: 'protected',
-    input: true
-  },
+  // {
+  //   weight: 1000,
+  //   type: 'checkbox',
+  //   label: 'Protected',
+  //   tooltip: 'A protected field will not be returned when queried via API.',
+  //   key: 'protected',
+  //   input: true
+  // },
   {
     weight: 1100,
     type: 'checkbox',

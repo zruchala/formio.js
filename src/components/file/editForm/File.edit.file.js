@@ -14,34 +14,38 @@ export default [
     dataSrc: 'custom',
     data: {
       custom() {
-        return _.map(Formio.providers.storage, (storage, key) => ({
-          label: storage.title,
-          value: key
-        }));
+        return [{
+          label: Formio.providers.storage.base64.title,
+          value: Formio.providers.storage.base64
+        }];
+        // return _.map(Formio.providers.storage, (storage, key) => ({
+        //   label: storage.title,
+        //   value: key
+        // }));
       }
     }
   },
-  {
-    type: 'textfield',
-    input: true,
-    key: 'url',
-    label: 'Url',
-    weight: 10,
-    placeholder: 'Enter the url to post the files to.',
-    tooltip: "See <a href='https://github.com/danialfarid/ng-file-upload#server-side' target='_blank'>https://github.com/danialfarid/ng-file-upload#server-side</a> for how to set up the server.",
-    conditional: {
-      json: { '===': [{ var: 'data.storage' }, 'url'] }
-    }
-  },
-  {
-    type: 'textfield',
-    input: true,
-    key: 'dir',
-    label: 'Directory',
-    placeholder: '(optional) Enter a directory for the files',
-    tooltip: 'This will place all the files uploaded in this field in the directory',
-    weight: 20
-  },
+  // {
+  //   type: 'textfield',
+  //   input: true,
+  //   key: 'url',
+  //   label: 'Url',
+  //   weight: 10,
+  //   placeholder: 'Enter the url to post the files to.',
+  //   tooltip: "See <a href='https://github.com/danialfarid/ng-file-upload#server-side' target='_blank'>https://github.com/danialfarid/ng-file-upload#server-side</a> for how to set up the server.",
+  //   conditional: {
+  //     json: { '===': [{ var: 'data.storage' }, 'url'] }
+  //   }
+  // },
+  // {
+  //   type: 'textfield',
+  //   input: true,
+  //   key: 'dir',
+  //   label: 'Directory',
+  //   placeholder: '(optional) Enter a directory for the files',
+  //   tooltip: 'This will place all the files uploaded in this field in the directory',
+  //   weight: 20
+  // },
   {
     type: 'checkbox',
     input: true,

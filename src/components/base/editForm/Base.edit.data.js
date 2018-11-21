@@ -56,22 +56,22 @@ export default [
     key: 'allowCalculateOverride',
     label: 'Allow Manual Override of Calculated Value',
     tooltip: 'When checked, this will allow the user to manually override the calculated value.'
-  },
-  {
-    weight: 400,
-    type: 'checkbox',
-    label: 'Encrypt',
-    tooltip: 'Encrypt this field on the server. This is two way encryption which is not be suitable for passwords.',
-    key: 'autofocus',
-    input: true
-  },
-  {
-    type: 'checkbox',
-    input: true,
-    weight: 500,
-    key: 'dbIndex',
-    label: 'Database Index',
-    tooltip: 'Set this field as an index within the database. Increases performance for submission queries.'
   }
+  // {
+  //   weight: 400,
+  //   type: 'checkbox',
+  //   label: 'Encrypt',
+  //   tooltip: 'Encrypt this field on the server. This is two way encryption which is not be suitable for passwords.',
+  //   key: 'autofocus',
+  //   input: true
+  // },
+  // {
+  //   type: 'checkbox',
+  //   input: true,
+  //   weight: 500,
+  //   key: 'dbIndex',
+  //   label: 'Database Index',
+  //   tooltip: 'Set this field as an index within the database. Increases performance for submission queries.'
+  // }
 ];
 /* eslint-enable max-len */

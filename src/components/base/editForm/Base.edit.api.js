@@ -11,15 +11,15 @@ export default [
       patternMessage: 'The property name must only contain alphanumeric characters, underscores, dots and dashes and should not be ended by dash or dot.'
     }
   },
-  {
-    weight: 100,
-    type: 'tags',
-    input: true,
-    label: 'Field Tags',
-    storeas: 'array',
-    tooltip: 'Tag the field for use in custom logic.',
-    key: 'tags'
-  },
+  // {
+  //   weight: 100,
+  //   type: 'tags',
+  //   input: true,
+  //   label: 'Field Tags',
+  //   storeas: 'array',
+  //   tooltip: 'Tag the field for use in custom logic.',
+  //   key: 'tags'
+  // },
   {
     weight: 200,
     type: 'datamap',
