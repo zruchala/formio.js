@@ -1191,6 +1191,9 @@ export default class BaseComponent extends Component {
     if (!component.tooltip) {
       return;
     }
+    // fixed tooltip
+    component.tooltip = this.t(component.tooltip);
+
     const ttElement = this.ce('i', {
       class: classes
     });
