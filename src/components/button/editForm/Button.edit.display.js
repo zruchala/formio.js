@@ -1,25 +1,25 @@
 import BuilderUtils from '../../../utils/builder';
 
 export default [
-  {
-    type: 'select',
-    key: 'action',
-    label: 'Action',
-    input: true,
-    dataSrc: 'values',
-    weight: 110,
-    tooltip: 'This is the action to be performed by this button.',
-    data: {
-      values: [
-        { label: 'Submit', value: 'submit' },
-        { label: 'Event', value: 'event' },
-        { label: 'Custom', value: 'custom' },
-        { label: 'Reset', value: 'reset' },
-        { label: 'OAuth', value: 'oauth' },
-        { label: 'POST to URL', value: 'url' }
-      ]
-    }
-  },
+  // {
+  //   type: 'select',
+  //   key: 'action',
+  //   label: 'Action',
+  //   input: true,
+  //   dataSrc: 'values',
+  //   weight: 110,
+  //   tooltip: 'This is the action to be performed by this button.',
+  //   data: {
+  //     values: [
+  //       { label: 'Submit', value: 'submit' },
+  //       { label: 'Event', value: 'event' },
+  //       { label: 'Custom', value: 'custom' },
+  //       { label: 'Reset', value: 'reset' },
+  //       { label: 'OAuth', value: 'oauth' },
+  //       { label: 'POST to URL', value: 'url' }
+  //     ]
+  //   }
+  // },
   {
     type: 'checkbox',
     input: true,
@@ -150,20 +150,20 @@ export default [
     tooltip: "This is the full icon class string to show the icon. Example: 'fa fa-plus'",
     weight: 170
   },
-  {
-    type: 'select',
-    input: true,
-    weight: 180,
-    label: 'Shortcut',
-    key: 'shortcut',
-    tooltip: 'Shortcut for this component.',
-    dataSrc: 'custom',
-    data: {
-      custom(values, component, data, row, utils, instance, form) {
-        return BuilderUtils.getAvailableShortcuts(form, component);
-      }
-    }
-  },
+  // {
+  //   type: 'select',
+  //   input: true,
+  //   weight: 180,
+  //   label: 'Shortcut',
+  //   key: 'shortcut',
+  //   tooltip: 'Shortcut for this component.',
+  //   dataSrc: 'custom',
+  //   data: {
+  //     custom(values, component, data, row, utils, instance, form) {
+  //       return BuilderUtils.getAvailableShortcuts(form, component);
+  //     }
+  //   }
+  // },
   {
     type: 'checkbox',
     key: 'block',

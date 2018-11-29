@@ -9,14 +9,14 @@ export default [
     key: 'validate.required',
     input: true
   },
-  {
-    weight: 100,
-    type: 'checkbox',
-    label: 'Unique',
-    tooltip: 'Makes sure the data submitted for this field is unique, and has not been submitted before.',
-    key: 'validate.unique',
-    input: true
-  },
+  // {
+  //   weight: 100,
+  //   type: 'checkbox',
+  //   label: 'Unique',
+  //   tooltip: 'Makes sure the data submitted for this field is unique, and has not been submitted before.',
+  //   key: 'validate.unique',
+  //   input: true
+  // },
   {
     weight: 150,
     type: 'select',
@@ -70,21 +70,21 @@ export default [
             <h5>Example:</h5>
             <pre>valid = (input === 'Joe') ? true : 'Your name must be "Joe"';</pre>
           </small>`
-      },
-      {
-        type: 'well',
-        components: [
-          {
-            weight: 100,
-            type: 'checkbox',
-            label: 'Secret Validation',
-            tooltip: 'Check this if you wish to perform the validation ONLY on the server side. This keeps your validation logic private and secret.',
-            description: 'Check this if you wish to perform the validation ONLY on the server side. This keeps your validation logic private and secret.',
-            key: 'validate.customPrivate',
-            input: true
-          }
-        ]
       }
+      // {
+      //   type: 'well',
+      //   components: [
+      //     {
+      //       weight: 100,
+      //       type: 'checkbox',
+      //       label: 'Secret Validation',
+      //       tooltip: 'Check this if you wish to perform the validation ONLY on the server side. This keeps your validation logic private and secret.',
+      //       description: 'Check this if you wish to perform the validation ONLY on the server side. This keeps your validation logic private and secret.',
+      //       key: 'validate.customPrivate',
+      //       input: true
+      //     }
+      //   ]
+      // }
     ]
   },
   {
