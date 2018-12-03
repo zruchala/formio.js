@@ -15,13 +15,9 @@ export default [
     data: {
       custom() {
         return [{
-          label: Formio.providers.storage.base64.title,
-          value: Formio.providers.storage.base64
+          label: 'Base64',
+          value: 'base64'
         }];
-        // return _.map(Formio.providers.storage, (storage, key) => ({
-        //   label: storage.title,
-        //   value: key
-        // }));
       }
     }
   },
